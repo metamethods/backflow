@@ -1,0 +1,13 @@
+[package]
+name = "plumbershim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eyre = "0.6.12"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.45.1", features = ["full"] }
+tokio-tungstenite = { version = "0.27.0", features = ["rustls", "tokio-rustls"] }
+tracing = { version = "0.1.41", features = ["async-await", "release_max_level_info"] }
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+zbus = "5.7.1"
