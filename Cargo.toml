@@ -4,10 +4,20 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait = "0.1.83"
+crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 eyre = "0.6.12"
+futures-util = "0.3.31"
 serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
 tokio = { version = "1.45.1", features = ["full"] }
-tokio-tungstenite = { version = "0.27.0", features = ["rustls", "tokio-rustls"] }
-tracing = { version = "0.1.41", features = ["async-await", "release_max_level_info"] }
+tokio-tungstenite = { version = "0.27.0", features = [
+    "rustls",
+    "tokio-rustls",
+] }
+tracing = { version = "0.1.41", features = [
+    "async-await",
+    "release_max_level_info",
+] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 zbus = "5.7.1"
