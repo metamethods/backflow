@@ -43,10 +43,12 @@ pub trait InputBackend: Send {
 pub enum KeyboardEvent {
     /// A key press event.
     /// The `key` is the keymap code of the key that was pressed.
-    KeyPress { key: u8 },
+    /// 
+    /// This is an evdev code, which is usually a string representation of the key.
+    KeyPress { key: String },
     /// A key release event.
     /// The `key` is the keymap code of the key that was released.
-    KeyRelease { key: u8 },
+    KeyRelease { key: String },
 }
 
 /// A pointer event, such as a mouse button click, release, move, or scroll.

@@ -18,14 +18,9 @@
 //! Consequently `zbus-xmlgen` did not generate code for the above interfaces.
 //!
 //! [Writing a client proxy]: https://dbus2.github.io/zbus/client.html
-//! [D-Bus standard interfaces]: https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces,
-use zbus::AsyncDrop;
-use zbus::Connection;
+//! [D-Bus standard interfaces]: https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces
 use zbus::proxy;
 use zbus::zvariant::Type;
-
-use crate::block_on;
-
 #[derive(Debug, Clone, Copy, PartialEq, Type)]
 #[zvariant(signature = "s")]
 pub enum TargetDeviceType {

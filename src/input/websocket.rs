@@ -177,12 +177,14 @@ mod tests {
         let mut packet = InputEventPacket::new("test-device".to_string(), timestamp);
 
         // Add some sample events
-        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress { key: 65 })); // 'A' key
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: 65.to_string(),
+        })); // 'A' key
         packet.add_event(InputEvent::Pointer(PointerEvent::Move {
             x_delta: 10,
             y_delta: -5,
         }));
-        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: 65 }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: 65.to_string() }));
 
         packet
     }

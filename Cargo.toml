@@ -24,3 +24,4 @@ tracing = { version = "0.1.41", features = [
 ] }
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 zbus = "5.7.1"
+zbus-inputplumber = { path = "crates/zbus-inputplumber" }

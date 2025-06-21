@@ -48,7 +48,9 @@ async fn main() -> Result<()> {
             .as_millis() as u64;
 
         let mut press_packet = InputEventPacket::new("test_device".to_string(), timestamp);
-        press_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress { key: 65 })); // 'A' key
+        press_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: 65.to_string(),
+        })); // 'A' key
 
         if let Err(e) = test_tx.send(press_packet) {
             tracing::error!("Failed to send test keyboard press: {}", e);
@@ -65,7 +67,7 @@ async fn main() -> Result<()> {
             .as_millis() as u64;
 
         let mut release_packet = InputEventPacket::new("test_device".to_string(), timestamp);
-        release_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: 65 })); // 'A' key
+        release_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: 65.to_string() })); // 'A' key
 
         if let Err(e) = test_tx.send(release_packet) {
             tracing::error!("Failed to send test keyboard release: {}", e);
@@ -142,7 +144,9 @@ async fn main() -> Result<()> {
 
             let key = 48 + (counter % 10) as u8; // Number keys 0-9
             let mut press_packet = InputEventPacket::new("test_device".to_string(), timestamp);
-            press_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress { key }));
+            press_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+                key: key.to_string(),
+            }));
 
             if let Err(e) = test_tx.send(press_packet) {
                 tracing::error!("Failed to send periodic test press: {}", e);
@@ -164,7 +168,7 @@ async fn main() -> Result<()> {
                 .as_millis() as u64;
 
             let mut release_packet = InputEventPacket::new("test_device".to_string(), timestamp);
-            release_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }));
+            release_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: key.to_string() }));
 
             if let Err(e) = test_tx.send(release_packet) {
                 tracing::error!("Failed to send periodic test release: {}", e);

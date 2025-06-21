@@ -894,6 +894,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zbus",
+ "zbus-inputplumber",
 ]
 
 [[package]]
