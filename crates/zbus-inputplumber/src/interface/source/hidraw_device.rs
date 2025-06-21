@@ -22,8 +22,7 @@
 use zbus::proxy;
 #[proxy(
     interface = "org.shadowblip.Input.Source.HIDRawDevice",
-    assume_defaults = true,
-    default_service = "org.shadowblip.InputPlumber"
+    assume_defaults = true
 )]
 pub trait HIDRawDevice {
     /// InterfaceNumber property
