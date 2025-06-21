@@ -1,0 +1,86 @@
+body {
+    background-color: black;
+    color: white;
+    margin: 0;
+    padding: 0;
+}
+
+.grid-container {
+    display: flex;
+    flex-direction: column;
+    width: 100vw;
+    height: 100vh;
+    border: 2px solid white;
+    box-sizing: border-box;
+}
+
+.grid-row {
+    display: flex;
+    flex: 1;
+    border-bottom: 1px solid white;
+}
+
+.grid-row.horizontal {
+    flex: 0.75;
+}
+
+.grid-row:last-child {
+    border-bottom: none;
+}
+
+.grid-row.horizontal {
+    flex-direction: column;
+}
+
+.grid-cell {
+    flex: 1;
+    border-right: 1px solid gray;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+.grid-cell:last-child {
+    border-right: none;
+}
+
+.horizontal .grid-cell {
+    border-right: none;
+    border-bottom: 1px solid gray;
+}
+
+.horizontal .grid-cell:last-child {
+    border-bottom: none;
+}
+
+.fullscreen-nav {
+    display: flex;
+    width: 100vw;
+    height: 100vh;
+}
+
+.nav-button {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    color: white;
+    font-size: 32px;
+    font-weight: bold;
+    border: 2px solid white;
+    box-sizing: border-box;
+}
+
+.nav-button:first-child {
+    border-right: 1px solid white;
+}
+
+.nav-button:last-child {
+    border-left: 1px solid white;
+}
+
+.nav-button:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}

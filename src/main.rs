@@ -196,7 +196,7 @@ async fn main() -> Result<()> {
         use input::InputBackend;
         use input::websocket::WebSocketInputBackend;
         use std::net::SocketAddr;
-        let bind_addr: SocketAddr = "127.0.0.1:8000".parse().expect("Invalid address");
+        let bind_addr: SocketAddr = "0.0.0.0:8000".parse().expect("Invalid address");
         let mut ws_backend = WebSocketInputBackend::new(bind_addr, ws_input_stream);
         if let Err(e) = ws_backend.run().await {
             tracing::error!("WebSocket backend error: {}", e);

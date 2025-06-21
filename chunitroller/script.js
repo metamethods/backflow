@@ -1,0 +1,376 @@
+// WebSocket handler for sending input events to plumbershim
+class WebSocketHandler {
+  // todo: don't hardcode the ip
+  constructor(url = "ws://192.168.1.34:8000") {
+    this.url = url;
+    this.ws = null;
+    this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.reconnectDelay = 1000; // 1 second
+    this.connect();
+  }
+
+  connect() {
+    try {
+      this.ws = new WebSocket(this.url);
+      
+      this.ws.onopen = () => {
+        console.log("🟢 Connected to plumbershim WebSocket");
+        this.isConnected = true;
+        this.reconnectAttempts = 0;
+      };
+
+      this.ws.onmessage = (event) => {
+        console.log("📥 Received from plumbershim:", event.data);
+      };
+
+      this.ws.onclose = (event) => {
+        console.log("🔴 WebSocket connection closed");
+        this.isConnected = false;
+        this.attemptReconnect();
+      };
+
+      this.ws.onerror = (error) => {
+        console.error("❌ WebSocket error:", error);
+        this.isConnected = false;
+      };
+    } catch (error) {
+      console.error("Failed to create WebSocket connection:", error);
+      this.attemptReconnect();
+    }
+  }
+
+  attemptReconnect() {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      console.log(`🔄 Attempting to reconnect... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+      setTimeout(() => {
+        this.connect();
+      }, this.reconnectDelay * this.reconnectAttempts);
+    } else {
+      console.error("Max reconnection attempts reached. Please refresh the page.");
+    }
+  }
+
+  sendInputEvent(deviceId, events) {
+    if (!this.isConnected || !this.ws) {
+      console.warn("WebSocket not connected. Cannot send event.");
+      return false;
+    }
+
+    const packet = {
+      device_id: deviceId,
+      timestamp: Date.now(),
+      events: events
+    };
+
+    try {
+      this.ws.send(JSON.stringify(packet));
+      console.log("📤 Sent input packet:", packet);
+      return true;
+    } catch (error) {
+      console.error("Failed to send WebSocket message:", error);
+      return false;
+    }
+  }
+
+  sendKeyboardEvent(key, pressed, deviceId = "chunitroller-webapp") {
+    const eventType = pressed ? "KeyPress" : "KeyRelease";
+    const events = [{
+      "Keyboard": {
+        [eventType]: {
+          "key": key
+        }
+      }
+    }];
+
+    return this.sendInputEvent(deviceId, events);
+  }
+
+  sendPointerEvent(eventType, data, deviceId = "chunitroller-webapp") {
+    const events = [{
+      "Pointer": {
+        [eventType]: data
+      }
+    }];
+
+    return this.sendInputEvent(deviceId, events);
+  }
+
+  close() {
+    if (this.ws) {
+      this.ws.close();
+      this.isConnected = false;
+    }
+  }
+}
+
+// this is a mess
+class CellFeedbackHandler {
+  constructor() {
+    this.activeCells = new Set();
+  }
+
+  activateCell(cell) {
+    if (!this.activeCells.has(cell)) {
+      cell.style.backgroundColor = "white";
+      cell.style.color = "black";
+      this.activeCells.add(cell);
+    }
+  }
+
+  deactivateCell(cell) {
+    if (this.activeCells.has(cell)) {
+      cell.style.backgroundColor = "";
+      cell.style.color = "";
+      this.activeCells.delete(cell);
+    }
+  }
+
+  resetAll() {
+    this.activeCells.forEach((cell) => {
+      cell.style.backgroundColor = "";
+      cell.style.color = "";
+    });
+    this.activeCells.clear();
+  }
+}
+class GridController {
+  constructor() {
+    this.feedbackHandler = new CellFeedbackHandler();
+    this.webSocketHandler = new WebSocketHandler();
+    this.cells = [];
+    this.activeTouches = new Map(); // touchId -> {cell, index}
+    this.init();
+  }
+
+  init() {
+    this.cells = document.querySelectorAll(".grid-cell");
+    this.cells.forEach((cell, index) => {
+      this.setupCellHandlers(cell, index);
+    });
+    this.setupGlobalTouchHandlers();
+
+    console.log(`Grid controller initialized with ${this.cells.length} cells`);
+  }
+
+  setupCellHandlers(cell, index) {
+    cell.addEventListener("touchstart", (e) => {
+      e.preventDefault();
+      Array.from(e.changedTouches).forEach((touch) => {
+        if (!this.activeTouches.has(touch.identifier)) {
+          this.activeTouches.set(touch.identifier, { cell, index });
+          this.handleCellPress(cell, index);
+        }
+      });
+    });
+  }
+
+  setupGlobalTouchHandlers() {
+    document.addEventListener("touchmove", (e) => {
+      if (this.activeTouches.size > 0) {
+        e.preventDefault();
+        this.handleTouchMove(e);
+      }
+    });
+
+    document.addEventListener("touchend", (e) => {
+      Array.from(e.changedTouches).forEach((touch) => {
+        const touchData = this.activeTouches.get(touch.identifier);
+        if (touchData) {
+          this.feedbackHandler.deactivateCell(touchData.cell);
+          
+          // Send keyboard release event
+          const key = this.mapCellToKey(touchData.index);
+          this.webSocketHandler.sendKeyboardEvent(key, false);
+          
+          touchData.cell.dispatchEvent(
+            new CustomEvent("cellrelease", {
+              detail: {
+                index: touchData.index,
+                cell: touchData.cell,
+                key: key,
+                reason: "touch_end",
+              },
+              bubbles: true,
+            }),
+          );
+          this.activeTouches.delete(touch.identifier);
+        }
+      });
+    });
+
+    document.addEventListener("touchcancel", (e) => {
+      Array.from(e.changedTouches).forEach((touch) => {
+        const touchData = this.activeTouches.get(touch.identifier);
+        if (touchData) {
+          this.feedbackHandler.deactivateCell(touchData.cell);
+          
+          // Send keyboard release event
+          const key = this.mapCellToKey(touchData.index);
+          this.webSocketHandler.sendKeyboardEvent(key, false);
+          
+          touchData.cell.dispatchEvent(
+            new CustomEvent("cellrelease", {
+              detail: {
+                index: touchData.index,
+                cell: touchData.cell,
+                key: key,
+                reason: "touch_cancel",
+              },
+              bubbles: true,
+            }),
+          );
+          this.activeTouches.delete(touch.identifier);
+        }
+      });
+    });
+  }
+
+  handleCellPress(cell, index) {
+    this.feedbackHandler.activateCell(cell);
+    
+    // Send keyboard event for cell press
+    const key = this.mapCellToKey(index);
+    this.webSocketHandler.sendKeyboardEvent(key, true);
+    
+    cell.dispatchEvent(
+      new CustomEvent("cellpress", {
+        detail: { index, cell, key },
+        bubbles: true,
+      }),
+    );
+  }
+
+  handleCellRelease(cell, index) {
+    this.feedbackHandler.deactivateCell(cell);
+    
+    // Send keyboard event for cell release
+    const key = this.mapCellToKey(index);
+    this.webSocketHandler.sendKeyboardEvent(key, false);
+    
+    cell.dispatchEvent(
+      new CustomEvent("cellrelease", {
+        detail: { index, cell, key, reason: "normal" },
+        bubbles: true,
+      }),
+    );
+  }
+
+  // Map cell index to keyboard key
+  mapCellToKey(index) {
+    // You can customize this mapping based on your needs
+    // For now, mapping to number keys and letters
+    if (index < 10) {
+      return `KEY_${index}`;  // KEY_0, KEY_1, etc.
+    } else if (index < 36) {
+      // Map to letters A-Z
+      const letter = String.fromCharCode(65 + (index - 10));
+      return `KEY_${letter}`;  // KEY_A, KEY_B, etc.
+    } else {
+      // For higher indices, use function keys
+      const fnKey = (index - 36) + 1;
+      return `KEY_F${fnKey}`;  // KEY_F1, KEY_F2, etc.
+    }
+  }
+
+  handleTouchMove(e) {
+    Array.from(e.touches).forEach((touch) => {
+      const touchData = this.activeTouches.get(touch.identifier);
+      if (!touchData) return;
+
+      const elementUnderTouch = document.elementFromPoint(
+        touch.clientX,
+        touch.clientY,
+      );
+
+      if (
+        elementUnderTouch &&
+        elementUnderTouch.classList.contains("grid-cell")
+      ) {
+        const newIndex = Array.from(this.cells).indexOf(elementUnderTouch);
+        if (newIndex !== -1 && elementUnderTouch !== touchData.cell) {
+          // Release the old cell
+          this.feedbackHandler.deactivateCell(touchData.cell);
+          const oldKey = this.mapCellToKey(touchData.index);
+          this.webSocketHandler.sendKeyboardEvent(oldKey, false);
+          
+          touchData.cell.dispatchEvent(
+            new CustomEvent("cellrelease", {
+              detail: {
+                index: touchData.index,
+                cell: touchData.cell,
+                key: oldKey,
+                reason: "slid_away",
+              },
+              bubbles: true,
+            }),
+          );
+          
+          // Activate the new cell
+          this.activeTouches.set(touch.identifier, {
+            cell: elementUnderTouch,
+            index: newIndex,
+          });
+          this.handleCellPress(elementUnderTouch, newIndex);
+        }
+      } else {
+        // Moved outside the grid
+        this.feedbackHandler.deactivateCell(touchData.cell);
+        const key = this.mapCellToKey(touchData.index);
+        this.webSocketHandler.sendKeyboardEvent(key, false);
+        
+        touchData.cell.dispatchEvent(
+          new CustomEvent("cellrelease", {
+            detail: {
+              index: touchData.index,
+              cell: touchData.cell,
+              key: key,
+              reason: "moved_outside",
+            },
+            bubbles: true,
+          }),
+        );
+        this.activeTouches.delete(touch.identifier);
+      }
+    });
+  }
+
+  getCell(index) {
+    return this.cells[index] || null;
+  }
+
+  getCellCount() {
+    return this.cells.length;
+  }
+
+  setFeedbackHandler(newHandler) {
+    this.feedbackHandler.resetAll();
+    this.feedbackHandler = newHandler;
+  }
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  window.gridController = new GridController();
+});
+
+document.addEventListener("cellpress", (e) => {
+  console.log(`Cell ${e.detail.index} pressed -> Key: ${e.detail.key}`);
+});
+
+document.addEventListener("cellrelease", (e) => {
+  if (e.detail.reason === "slid_away") {
+    console.log(`Cell ${e.detail.index} released (slid away) -> Key: ${e.detail.key}`);
+  } else if (e.detail.reason === "moved_outside") {
+    console.log(`Cell ${e.detail.index} released (moved outside grid) -> Key: ${e.detail.key}`);
+  } else {
+    console.log(`Cell ${e.detail.index} released -> Key: ${e.detail.key}`);
+  }
+});
+
+document.addEventListener("contextmenu", (e) => {
+  if (e.target.classList.contains("grid-cell")) {
+    e.preventDefault();
+  }
+});
