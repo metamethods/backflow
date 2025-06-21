@@ -2,8 +2,9 @@
 use std::collections::HashMap;
 
 use eyre::Result;
+use zbus_inputplumber::interface::mouse::MouseProxy;
 
-use crate::input::{InputEvent, InputEventPacket, InputEventStream, KeyboardEvent};
+use crate::input::{InputEvent, InputEventPacket, InputEventStream, KeyboardEvent, PointerEvent};
 use crate::output::OutputBackend;
 use zbus_inputplumber::interface::{
     gamepad::GamepadProxy,
@@ -13,6 +14,7 @@ use zbus_inputplumber::interface::{
 
 pub enum DeviceProxy {
     Keyboard(KeyboardProxy<'static>),
+    Mouse(MouseProxy<'static>),
     Gamepad(GamepadProxy<'static>),
 }
 
@@ -39,6 +41,7 @@ impl PlumberOutputBackend {
         // Create devices using helper function
         Self::create_keyboard_device(&connection, &input_manager, &mut devices).await?;
         Self::create_gamepad_device(&connection, &input_manager, &mut devices).await?;
+        Self::create_mouse_device(&connection, &input_manager, &mut devices).await?;
 
         Ok(Self {
             connection,
@@ -58,7 +61,6 @@ impl PlumberOutputBackend {
         let proxy = KeyboardProxy::builder(connection)
             .path(target_device.path.clone())?
             .interface("org.shadowblip.Input.Keyboard")?
-            
             .build()
             .await?;
         tracing::info!("Keyboard proxy created at path: {}", target_device.path);
@@ -100,6 +102,31 @@ impl PlumberOutputBackend {
         Ok(())
     }
 
+    async fn create_mouse_device(
+        connection: &zbus::Connection,
+        input_manager: &InputManagerProxy<'_>,
+        devices: &mut HashMap<&'static str, DeviceEntry>,
+    ) -> Result<()> {
+        tracing::info!("Creating mouse device...");
+        let device_type = input_manager::TargetDeviceType::Mouse;
+        let target_device = TargetDevice::new(input_manager, device_type).await?;
+        tracing::info!("Mouse target device created: {}", target_device.path);
+        let proxy = MouseProxy::builder(connection)
+            .path(target_device.path.clone())?
+            .build()
+            .await?;
+        tracing::info!("Mouse proxy created at path: {}", target_device.path);
+
+        devices.insert(
+            device_type.into(),
+            DeviceEntry {
+                target_device,
+                proxy: DeviceProxy::Mouse(proxy),
+            },
+        );
+        tracing::debug!("Mouse device added to devices map");
+        Ok(())
+    }
     /// Get a device by its type string (e.g., "keyboard", "gamepad")
     pub fn get_device(&self, device_type: &str) -> Option<&DeviceEntry> {
         self.devices.get(device_type)
@@ -151,6 +178,9 @@ impl DbusPlumberOutput {
             InputEvent::Keyboard(keyboard_event) => {
                 self.handle_keyboard_event(keyboard_event).await
             }
+            InputEvent::Pointer(pointer_event) => {
+                self.handle_pointer_event(pointer_event).await
+            }
             _ => {
                 // Skip other event types for now
                 tracing::debug!("Skipping unsupported event type");
@@ -176,6 +206,81 @@ impl DbusPlumberOutput {
             }
             KeyboardEvent::KeyRelease { key } => {
                 proxy.send_key(&key, false).await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_pointer_event(&mut self, event: PointerEvent) -> Result<()> {
+        let Some(mouse_device) = self.backend.get_device("mouse") else {
+            tracing::warn!("No mouse device available");
+            return Ok(());
+        };
+
+        let Some(kb_device) = self.backend.get_device("keyboard") else {
+            tracing::warn!("No keyboard device available for pointer events");
+            return Ok(());
+        };
+
+        let DeviceProxy::Mouse(proxy) = &mouse_device.proxy else {
+            tracing::error!("Expected mouse proxy but got different device type");
+            return Ok(());
+        };
+
+        let DeviceProxy::Keyboard(kb_proxy) = &kb_device.proxy else {
+            tracing::error!("Expected keyboard proxy but got different device type");
+            return Ok(());
+        };
+
+        const POINTER_EVENTS: [(PointerEvent, &str); 5] = [
+            (PointerEvent::Click { button: 1 }, "BTN_LEFT"),
+            (PointerEvent::Click { button: 2 }, "BTN_RIGHT"),
+            (PointerEvent::Click { button: 3 }, "BTN_MIDDLE"),
+            (PointerEvent::Click { button: 4 }, "BTN_SIDE"),
+            (PointerEvent::Click { button: 5 }, "BTN_EXTRA"),
+        ];
+        // click order is left, right, middle, side, extra
+
+        match event {
+            PointerEvent::Move { x_delta, y_delta } => {
+                proxy.move_cursor(x_delta, y_delta).await?;
+            }
+            PointerEvent::Click { button } => {
+                if let Some((_, key)) = POINTER_EVENTS.iter().find(
+                    |(event, _)| matches!(event, PointerEvent::Click { button: b } if *b == button),
+                ) {
+                    kb_proxy.send_key(key, true).await?;
+                } else {
+                    tracing::warn!("Unsupported pointer button: {}", button);
+                    return Ok(());
+                }
+            }
+            PointerEvent::ClickRelease { button } => {
+                if let Some((_, key)) = POINTER_EVENTS.iter().find(
+                    |(event, _)| matches!(event, PointerEvent::Click { button: b } if *b == button),
+                ) {
+                    kb_proxy.send_key(key, false).await?;
+                } else {
+                    tracing::warn!("Unsupported pointer button release: {}", button);
+                    return Ok(());
+                }
+            }
+            PointerEvent::Scroll { x_delta, y_delta } => {
+                if y_delta > 0 {
+                    kb_proxy.send_key("KEY_SCROLLUP", true).await?;
+                    kb_proxy.send_key("KEY_SCROLLUP", false).await?;
+                } else if y_delta < 0 {
+                    kb_proxy.send_key("KEY_SCROLLDOWN", true).await?;
+                    kb_proxy.send_key("KEY_SCROLLDOWN", false).await?;
+                }
+
+                if x_delta > 0 {
+                    kb_proxy.send_key("KEY_SCROLLRIGHT", true).await?;
+                    kb_proxy.send_key("KEY_SCROLLRIGHT", false).await?;
+                } else if x_delta < 0 {
+                    kb_proxy.send_key("KEY_SCROLLLEFT", true).await?;
+                    kb_proxy.send_key("KEY_SCROLLLEFT", false).await?;
+                }
             }
         }
         Ok(())
