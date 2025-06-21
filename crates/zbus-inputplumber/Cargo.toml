@@ -1,0 +1,8 @@
+[package]
+name = "zbus-inputplumber"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.45.1", features = ["full"] }
+zbus = "5.7.1"

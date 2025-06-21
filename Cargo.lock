@@ -1608,6 +1608,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zbus-inputplumber"
+version = "0.1.0"
+dependencies = [
+ "tokio",
+ "zbus",
+]
+
+[[package]]
 name = "zbus_macros"
 version = "5.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
