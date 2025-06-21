@@ -182,8 +182,9 @@ class GridController {
           this.feedbackHandler.deactivateCell(touchData.cell);
           
           // Send keyboard release event
-          const key = this.mapCellToKey(touchData.index);
-          this.webSocketHandler.sendKeyboardEvent(key, false);
+          const key = this.mapCellToKey(touchData.cell);
+          const deviceName = this.getDeviceNameForCell(touchData.cell);
+          this.webSocketHandler.sendKeyboardEvent(key, false, deviceName);
           
           touchData.cell.dispatchEvent(
             new CustomEvent("cellrelease", {
@@ -208,8 +209,9 @@ class GridController {
           this.feedbackHandler.deactivateCell(touchData.cell);
           
           // Send keyboard release event
-          const key = this.mapCellToKey(touchData.index);
-          this.webSocketHandler.sendKeyboardEvent(key, false);
+          const key = this.mapCellToKey(touchData.cell);
+          const deviceName = this.getDeviceNameForCell(touchData.cell);
+          this.webSocketHandler.sendKeyboardEvent(key, false, deviceName);
           
           touchData.cell.dispatchEvent(
             new CustomEvent("cellrelease", {
@@ -232,8 +234,9 @@ class GridController {
     this.feedbackHandler.activateCell(cell);
     
     // Send keyboard event for cell press
-    const key = this.mapCellToKey(index);
-    this.webSocketHandler.sendKeyboardEvent(key, true);
+    const key = this.mapCellToKey(cell);
+    const deviceName = this.getDeviceNameForCell(cell);
+    this.webSocketHandler.sendKeyboardEvent(key, true, deviceName);
     
     cell.dispatchEvent(
       new CustomEvent("cellpress", {
@@ -247,8 +250,9 @@ class GridController {
     this.feedbackHandler.deactivateCell(cell);
     
     // Send keyboard event for cell release
-    const key = this.mapCellToKey(index);
-    this.webSocketHandler.sendKeyboardEvent(key, false);
+    const key = this.mapCellToKey(cell);
+    const deviceName = this.getDeviceNameForCell(cell);
+    this.webSocketHandler.sendKeyboardEvent(key, false, deviceName);
     
     cell.dispatchEvent(
       new CustomEvent("cellrelease", {
@@ -258,21 +262,90 @@ class GridController {
     );
   }
 
-  // Map cell index to keyboard key
-  mapCellToKey(index) {
-    // You can customize this mapping based on your needs
-    // For now, mapping to number keys and letters
-    if (index < 10) {
-      return `KEY_${index}`;  // KEY_0, KEY_1, etc.
-    } else if (index < 36) {
-      // Map to letters A-Z
-      const letter = String.fromCharCode(65 + (index - 10));
-      return `KEY_${letter}`;  // KEY_A, KEY_B, etc.
+  // Map cell to keyboard key using data-key attribute
+  mapCellToKey(cellOrIndex) {
+    let cell;
+    if (typeof cellOrIndex === 'number') {
+      // If given an index, get the cell element
+      cell = this.cells[cellOrIndex];
     } else {
-      // For higher indices, use function keys
-      const fnKey = (index - 36) + 1;
-      return `KEY_F${fnKey}`;  // KEY_F1, KEY_F2, etc.
+      // If given a cell element directly
+      cell = cellOrIndex;
     }
+    
+    if (!cell) {
+      console.warn("Could not find cell for mapping");
+      return "KEY_UNKNOWN";
+    }
+
+    const dataKey = cell.getAttribute('data-key');
+    if (!dataKey) {
+      console.warn("Cell has no data-key attribute:", cell);
+      return "KEY_UNKNOWN";
+    }
+
+    // Convert the data-key to Linux key code format
+    return this.convertToLinuxKeyCode(dataKey);
+  }
+
+  // Convert data-key attribute to Linux key code format
+  convertToLinuxKeyCode(dataKey) {
+    // Handle special cases first
+    const specialKeys = {
+      'Backspace': 'KEY_BACKSPACE',
+      'Tab': 'KEY_TAB',
+      'Enter': 'KEY_ENTER',
+      'CapsLock': 'KEY_CAPSLOCK',
+      'ShiftLeft': 'KEY_LEFTSHIFT',
+      'ShiftRight': 'KEY_RIGHTSHIFT',
+      'ControlLeft': 'KEY_LEFTCTRL',
+      'ControlRight': 'KEY_RIGHTCTRL',
+      'AltLeft': 'KEY_LEFTALT',
+      'AltRight': 'KEY_RIGHTALT',
+      ' ': 'KEY_SPACE',
+      '`': 'KEY_GRAVE',
+      '-': 'KEY_MINUS',
+      '=': 'KEY_EQUAL',
+      '[': 'KEY_LEFTBRACE',
+      ']': 'KEY_RIGHTBRACE',
+      '\\': 'KEY_BACKSLASH',
+      ';': 'KEY_SEMICOLON',
+      "'": 'KEY_APOSTROPHE',
+      ',': 'KEY_COMMA',
+      '.': 'KEY_DOT',
+      '/': 'KEY_SLASH'
+    };
+
+    if (specialKeys[dataKey]) {
+      return specialKeys[dataKey];
+    }
+
+    // Handle numbers 0-9
+    if (/^[0-9]$/.test(dataKey)) {
+      return `KEY_${dataKey}`;
+    }
+
+    // Handle letters a-z (convert to uppercase for key codes)
+    if (/^[a-zA-Z]$/.test(dataKey)) {
+      return `KEY_${dataKey.toUpperCase()}`;
+    }
+
+    // If we don't recognize it, return as-is with KEY_ prefix
+    console.warn("Unknown key mapping for:", dataKey);
+    return `KEY_${dataKey.toUpperCase()}`;
+  }
+
+  // Get device name based on cell's section
+  getDeviceNameForCell(cell) {
+    // Find the parent container with data-cell-section
+    let container = cell.closest('[data-cell-section]');
+    if (container) {
+      const section = container.getAttribute('data-cell-section');
+      return `chunitroller-${section}`;
+    }
+    
+    // Fallback to generic name
+    return "chunitroller-webapp";
   }
 
   handleTouchMove(e) {
@@ -293,8 +366,9 @@ class GridController {
         if (newIndex !== -1 && elementUnderTouch !== touchData.cell) {
           // Release the old cell
           this.feedbackHandler.deactivateCell(touchData.cell);
-          const oldKey = this.mapCellToKey(touchData.index);
-          this.webSocketHandler.sendKeyboardEvent(oldKey, false);
+          const oldKey = this.mapCellToKey(touchData.cell);
+          const oldDeviceName = this.getDeviceNameForCell(touchData.cell);
+          this.webSocketHandler.sendKeyboardEvent(oldKey, false, oldDeviceName);
           
           touchData.cell.dispatchEvent(
             new CustomEvent("cellrelease", {
@@ -318,8 +392,9 @@ class GridController {
       } else {
         // Moved outside the grid
         this.feedbackHandler.deactivateCell(touchData.cell);
-        const key = this.mapCellToKey(touchData.index);
-        this.webSocketHandler.sendKeyboardEvent(key, false);
+        const key = this.mapCellToKey(touchData.cell);
+        const deviceName = this.getDeviceNameForCell(touchData.cell);
+        this.webSocketHandler.sendKeyboardEvent(key, false, deviceName);
         
         touchData.cell.dispatchEvent(
           new CustomEvent("cellrelease", {
