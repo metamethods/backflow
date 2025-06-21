@@ -22,7 +22,8 @@
 use zbus::proxy;
 #[proxy(
     interface = "org.shadowblip.Input.CompositeDevice",
-    assume_defaults = true
+    assume_defaults = true,
+    default_service = "org.shadowblip.InputPlumber"
 )]
 pub trait CompositeDevice {
     /// LoadProfilePath method

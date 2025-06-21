@@ -20,7 +20,11 @@
 //! [Writing a client proxy]: https://dbus2.github.io/zbus/client.html
 //! [D-Bus standard interfaces]: https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces,
 use zbus::proxy;
-#[proxy(interface = "org.shadowblip.Input.DBusDevice", assume_defaults = true)]
+#[proxy(
+    interface = "org.shadowblip.Input.DBusDevice",
+    assume_defaults = true,
+    default_service = "org.shadowblip.InputPlumber"
+)]
 pub trait DBusDevice {
     /// InputEvent signal
     #[zbus(signal)]

@@ -10,6 +10,10 @@ pub use plumber_dbus::DbusPlumberOutput;
 pub trait OutputBackend: Send {
     /// Starts the output backend, processing input events and sending them to the appropriate destination.
     async fn run(&mut self) -> eyre::Result<()>;
+    async fn stop(&mut self) -> eyre::Result<()> {
+        // Default implementation does nothing
+        Ok(())
+    }
 }
 
 pub enum OutputBackendType {
@@ -22,6 +26,13 @@ impl OutputBackend for OutputBackendType {
         match self {
             OutputBackendType::Dummy(backend) => backend.run().await,
             OutputBackendType::Dbus(backend) => backend.run().await,
+        }
+    }
+
+    async fn stop(&mut self) -> eyre::Result<()> {
+        match self {
+            OutputBackendType::Dummy(backend) => backend.stop().await,
+            OutputBackendType::Dbus(backend) => backend.stop().await,
         }
     }
 }

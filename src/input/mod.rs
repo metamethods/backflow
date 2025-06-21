@@ -43,7 +43,7 @@ pub trait InputBackend: Send {
 pub enum KeyboardEvent {
     /// A key press event.
     /// The `key` is the keymap code of the key that was pressed.
-    /// 
+    ///
     /// This is an evdev code, which is usually a string representation of the key.
     KeyPress { key: String },
     /// A key release event.
@@ -105,8 +105,8 @@ impl InputEventPacket {
     }
 }
 
-
 /// Represents a stream of input event packets, using crossbeam channels for communication.
+#[derive(Clone)]
 pub struct InputEventStream {
     /// Sender for input event packets.
     pub tx: Sender<InputEventPacket>,
@@ -132,6 +132,12 @@ impl InputEventStream {
     /// Receives an input event packet from the stream.
     pub fn receive(&self) -> Result<InputEventPacket, crossbeam::channel::RecvError> {
         self.rx.recv()
+    }
+}
+
+impl Default for InputEventStream {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

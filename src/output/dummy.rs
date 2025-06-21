@@ -1,7 +1,6 @@
 //! Dummy output backend for testing and demonstration purposes.
 use crate::input::{InputEventPacket, InputEventStream};
 use crate::output::OutputBackend;
-use async_trait::async_trait;
 use eyre::Result;
 
 pub struct DummyOutput {
