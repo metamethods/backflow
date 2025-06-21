@@ -19,8 +19,129 @@
 //!
 //! [Writing a client proxy]: https://dbus2.github.io/zbus/client.html
 //! [D-Bus standard interfaces]: https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces,
+use zbus::AsyncDrop;
+use zbus::Connection;
 use zbus::proxy;
-#[proxy(interface = "org.shadowblip.InputManager", assume_defaults = true)]
+use zbus::zvariant::Type;
+
+use crate::block_on;
+
+#[derive(Debug, Clone, Copy, PartialEq, Type)]
+#[zvariant(signature = "s")]
+pub enum TargetDeviceType {
+    Null,
+    Dbus,
+    Deck,
+    DeckUhid,
+    Ds5,
+    Ds5Edge,
+    HoriSteam,
+    Keyboard,
+    Mouse,
+    Gamepad,
+    Touchpad,
+    Touchscreen,
+    Xb360,
+    XboxElite,
+    XboxSeries,
+    UnifiedGamepad,
+    Debug,
+}
+
+pub struct TargetDevice {
+    pub path: String,
+    pub kind: TargetDeviceType,
+}
+
+impl TargetDevice {
+    pub async fn new(
+        manager: &InputManagerProxy<'_>,
+        kind: TargetDeviceType,
+    ) -> zbus::Result<Self> {
+        let path = manager.create_target_device(kind).await?;
+        Ok(Self { path, kind })
+    }
+
+    pub async fn stop(&self, manager: &InputManagerProxy<'_>) -> zbus::Result<()> {
+        manager.stop_target_device(&self.path).await
+    }
+    pub async fn attach(
+        &self,
+        manager: &InputManagerProxy<'_>,
+        composite_path: &str,
+    ) -> zbus::Result<()> {
+        manager
+            .attach_target_device(&self.path, composite_path)
+            .await
+    }
+}
+
+const TARGET_DEVICE_MAPPINGS: &[(TargetDeviceType, &str)] = &[
+    (TargetDeviceType::Null, "null"),
+    (TargetDeviceType::Dbus, "dbus"),
+    (TargetDeviceType::Deck, "deck"),
+    (TargetDeviceType::DeckUhid, "deck-uhid"),
+    (TargetDeviceType::Ds5, "ds5"),
+    (TargetDeviceType::Ds5Edge, "ds5-edge"),
+    (TargetDeviceType::HoriSteam, "hori-steam"),
+    (TargetDeviceType::Keyboard, "keyboard"),
+    (TargetDeviceType::Mouse, "mouse"),
+    (TargetDeviceType::Gamepad, "gamepad"),
+    (TargetDeviceType::Touchpad, "touchpad"),
+    (TargetDeviceType::Touchscreen, "touchscreen"),
+    (TargetDeviceType::Xb360, "xb360"),
+    (TargetDeviceType::XboxElite, "xbox-elite"),
+    (TargetDeviceType::XboxSeries, "xbox-series"),
+    (TargetDeviceType::UnifiedGamepad, "unified-gamepad"),
+    (TargetDeviceType::Debug, "debug"),
+];
+
+impl From<&str> for TargetDeviceType {
+    fn from(value: &str) -> Self {
+        TARGET_DEVICE_MAPPINGS
+            .iter()
+            .find(|(_, s)| *s == value)
+            .map(|(device_type, _)| *device_type)
+            .unwrap_or_else(|| panic!("Unknown target device type: {}", value))
+    }
+}
+
+impl From<TargetDeviceType> for &'static str {
+    fn from(value: TargetDeviceType) -> Self {
+        TARGET_DEVICE_MAPPINGS
+            .iter()
+            .find(|(device_type, _)| *device_type == value)
+            .map(|(_, s)| *s)
+            .expect("All enum variants should be mapped")
+    }
+}
+
+impl serde::Serialize for TargetDeviceType {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let s: &'static str = (*self).into();
+        serializer.serialize_str(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for TargetDeviceType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Ok(Self::from(s.as_str()))
+    }
+}
+
+#[proxy(
+    interface = "org.shadowblip.InputManager",
+    assume_defaults = true,
+    default_path = "/org/shadowblip/InputPlumber/Manager",
+    default_service = "org.shadowblip.InputPlumber"
+)]
 pub trait InputManager {
     /// AttachTargetDevice method
     fn attach_target_device(&self, target_path: &str, composite_path: &str) -> zbus::Result<()>;
@@ -29,7 +150,7 @@ pub trait InputManager {
     fn create_composite_device(&self, config_path: &str) -> zbus::Result<String>;
 
     /// CreateTargetDevice method
-    fn create_target_device(&self, kind: &str) -> zbus::Result<String>;
+    fn create_target_device(&self, kind: TargetDeviceType) -> zbus::Result<String>;
 
     /// HookSleep method
     fn hook_sleep(&self) -> zbus::Result<()>;
@@ -64,3 +185,67 @@ pub trait InputManager {
     #[zbus(property)]
     fn version(&self) -> zbus::Result<String>;
 }
+// todo: proper async drop
+
+// #[derive(Debug, Clone)]
+// pub struct ManagedTargetDevice {
+//     pub path: String,
+//     pub kind: TargetDeviceType,
+//     connection: Connection,
+// }
+
+// impl Drop for ManagedTargetDevice {
+//     fn drop(&mut self) {
+//         // We need to handle the async cleanup in Drop
+//         // Since we can't await in Drop, we'll spawn a detached task
+//         let connection = self.connection.clone();
+//         let path = self.path.clone();
+
+//         // Spawn a detached task to handle cleanup
+//         // This is best-effort - we can't handle errors in Drop
+//         block_on(async move {
+//             zbus::AsyncDrop::async_drop(self.clone()).await;
+//         });
+
+//         // sleep for a short duration to allow the async task to run
+//         // std::thread::sleep(std::time::Duration::from_millis(100));
+//     }
+// }
+// #[async_trait::async_trait]
+// impl AsyncDrop for ManagedTargetDevice {
+//     async fn async_drop(self) {
+//         // Use the connection to create a new manager proxy
+//         if let Ok(manager) = InputManagerProxy::new(&self.connection).await {
+//             // Call the stop method on the manager
+//             let _ = manager.stop_target_device(&self.path).await;
+//         }
+//     }
+// }
+
+// impl ManagedTargetDevice {
+//     pub async fn new(
+//         manager: &InputManagerProxy<'_>,
+//         kind: TargetDeviceType,
+//     ) -> zbus::Result<Self> {
+//         let path = manager.create_target_device(kind).await?;
+//         // Get the connection from the manager
+//         let connection = manager.inner().connection().clone();
+//         Ok(Self {
+//             path,
+//             kind,
+//             connection,
+//         })
+//     }
+
+//     pub async fn stop(self) -> zbus::Result<()> {
+//         let manager = InputManagerProxy::new(&self.connection).await?;
+//         manager.stop_target_device(&self.path).await
+//     }
+
+//     pub async fn attach(&self, composite_path: &str) -> zbus::Result<()> {
+//         let manager = InputManagerProxy::new(&self.connection).await?;
+//         manager
+//             .attach_target_device(&self.path, composite_path)
+//             .await
+//     }
+// }

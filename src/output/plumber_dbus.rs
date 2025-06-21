@@ -4,51 +4,6 @@ use crate::output::OutputBackend;
 use eyre::Result;
 
 
-pub enum TargetDeviceType {
-    Null,
-    Dbus,
-    Deck,
-    DeckUhid,
-    Ds5,
-    Ds5Edge,
-    HoriSteam,
-    Keyboard,
-    Mouse,
-    Gamepad,
-    Touchpad,
-    Touchscreen,
-    Xb360,
-    XboxElite,
-    XboxSeries,
-    UnifiedGamepad,
-    Debug,
-}
-
-impl From<&str> for TargetDeviceType {
-    fn from(value: &str) -> Self {
-        match value {
-            "null" => TargetDeviceType::Null,
-            "dbus" => TargetDeviceType::Dbus,
-            "deck" => TargetDeviceType::Deck,
-            "deck-uhid" => TargetDeviceType::DeckUhid,
-            "ds5" => TargetDeviceType::Ds5,
-            "ds5-edge" => TargetDeviceType::Ds5Edge,
-            "hori-steam" => TargetDeviceType::HoriSteam,
-            "keyboard" => TargetDeviceType::Keyboard,
-            "mouse" => TargetDeviceType::Mouse,
-            "gamepad" => TargetDeviceType::Gamepad,
-            "touchpad" => TargetDeviceType::Touchpad,
-            "touchscreen" => TargetDeviceType::Touchscreen,
-            "xb360" => TargetDeviceType::Xb360,
-            "xbox-elite" => TargetDeviceType::XboxElite,
-            "xbox-series" => TargetDeviceType::XboxSeries,
-            "unified-gamepad" => TargetDeviceType::UnifiedGamepad,
-            "debug" => TargetDeviceType::Debug,
-            _ => panic!("Unknown target device type: {}", value),
-        }
-    }
-}
-
 /// initialize by calling org.shadowblip.InputManager CreateTargetDevice <input_type>
 pub struct InputPlumberTargetDev {
     // SendKey sb KEY_ENTER 1 for example
