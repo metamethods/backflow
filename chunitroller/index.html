@@ -1,13 +1,40 @@
 <!doctype html>
 <html>
     <head>
-        <title>chunitroller</title>
+        <title>Backflow Web</title>
         <link rel="stylesheet" href="styles.css" />
+          <!-- Viewport for mobile -->
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+
+        <!-- Apple-specific meta tags -->
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-status-bar-style" content="black">
+        <meta name="apple-mobile-web-app-title" content="Your App">
+
+        <!-- PWA manifest -->
+        <link rel="manifest" href="/manifest.json">
+
+        <!-- Icons -->
+        <link rel="apple-touch-icon" href="/icon-192.png">
+        <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+
+        <!-- Theme colors (optional but recommended) -->
+        <meta name="theme-color" content="#000000">
     </head>
     <body>
         <div class="fullscreen-nav">
             <a href="chuni.html" class="nav-button">Chuni Controller</a>
             <a href="keyboard.html" class="nav-button">Keyboard</a>
         </div>
+    <script>
+        // Register the service worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').then(reg => {
+                console.log('SW registered', reg);
+            }).catch(err => {
+                console.error('SW registration failed:', err);
+            });
+        }
+    </script>
     </body>
 </html>
