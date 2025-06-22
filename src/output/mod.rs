@@ -1,9 +1,11 @@
 pub mod dummy;
 pub mod plumber_dbus;
+pub mod udev;
 
 // Re-export the concrete types for external use
 pub use dummy::DummyOutput;
 pub use plumber_dbus::DbusPlumberOutput;
+pub use udev::UdevOutput;
 
 // even though our MSRV is Rust 1.75 and Rust 2024,
 // we use async_trait because of trait object safety
@@ -19,6 +21,7 @@ pub trait OutputBackend: Send {
 pub enum OutputBackendType {
     Dummy(DummyOutput),
     Dbus(DbusPlumberOutput),
+    Udev(UdevOutput),
 }
 
 impl OutputBackend for OutputBackendType {
@@ -26,6 +29,7 @@ impl OutputBackend for OutputBackendType {
         match self {
             OutputBackendType::Dummy(backend) => backend.run().await,
             OutputBackendType::Dbus(backend) => backend.run().await,
+            OutputBackendType::Udev(backend) => backend.run().await,
         }
     }
 
@@ -33,6 +37,7 @@ impl OutputBackend for OutputBackendType {
         match self {
             OutputBackendType::Dummy(backend) => backend.stop().await,
             OutputBackendType::Dbus(backend) => backend.stop().await,
+            OutputBackendType::Udev(backend) => backend.stop().await,
         }
     }
 }

@@ -222,19 +222,19 @@ async fn main() -> Result<()> {
     // You can easily switch between different output backends here
     let backend_type = std::env::var("OUTPUT_BACKEND").unwrap_or_else(|_| "dbus".to_string());
 
-    let mut dbus_output = output::OutputBackendType::Dbus(
-        output::plumber_dbus::DbusPlumberOutput::new(dbus_input_stream).await,
-    );
+    let mut output = output::OutputBackendType::Udev(
+            output::udev::UdevOutput::new(dbus_input_stream)?,
+        );
 
     tracing::info!("Starting {} output backend...", backend_type);
     tracing::info!("Press Ctrl+C to gracefully shutdown the application");
 
     // Set up ctrl+c handler
     tokio::select! {
-        result = dbus_output.run() => {
+        result = output.run() => {
             match result {
-                Ok(_) => tracing::info!("D-Bus output backend finished"),
-                Err(e) => tracing::error!("D-Bus output backend error: {}", e),
+                Ok(_) => tracing::info!("output backend finished"),
+                Err(e) => tracing::error!("output backend error: {}", e),
             }
         }
         signal_result = tokio::signal::ctrl_c() => {
@@ -247,10 +247,10 @@ async fn main() -> Result<()> {
             // Abort the WebSocket task
             event_task.abort();
 
-            tracing::info!("Stopping D-Bus backend...");
+            tracing::info!("Stopping backend...");
             // Try to stop the backend gracefully
-            if let Err(e) = dbus_output.stop().await {
-                tracing::warn!("Error stopping D-Bus backend: {}", e);
+            if let Err(e) = output.stop().await {
+                tracing::warn!("Error stopping backend: {}", e);
             }
 
             tracing::info!("Shutdown complete");

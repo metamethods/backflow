@@ -1,0 +1,32 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ShadowBlip/InputPlumber/main/rootfs/usr/share/inputplumber/schema/composite_device_v1.json
+# Schema version number
+version: 1
+# The type of configuration schema
+kind: CompositeDevice
+# Name of the composite device mapping
+name: Test Composite Device
+# Maximum number of source devices per CompositeDevice.
+maximum_sources: 1
+# Only use this profile if *any* of the given matches matches. If this list is
+# empty, then the source devices will *always* be checked.
+# /sys/class/dmi/id/product_name
+matches: []
+# One or more source devices to combine into a single virtual device. The events
+# from these devices will be watched and translated according to the key map.
+source_devices:
+  - group: keyboard
+    unique: true
+    evdev:
+      # name: Nintendo Co., Ltd. Pro Controller
+      handler: event0
+  #- group: imu
+  #  evdev:
+  #    name: Nintendo Co., Ltd. Pro Controller (IMU)
+# The target input device(s) to emulate by default
+target_devices:
+  - gamepad #TODO: Nintendo controller target
+  - mouse
+  - keyboard
+options:
+  auto_manage: true
+  persist: true
