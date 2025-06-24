@@ -17,8 +17,8 @@ pub fn build_logger() -> Result<()> {
             .add_directive("tungstenite=warn".parse().unwrap())
             .add_directive("tokio_tungstenite=warn".parse().unwrap())
             .add_directive("async_io=warn".parse().unwrap())
-            // Keep our application logs at trace level
-            // .add_directive("plumbershim=trace".parse().unwrap())
+        // Keep our application logs at trace level
+        // .add_directive("plumbershim=trace".parse().unwrap())
     });
 
     tracing_subscriber::fmt()
@@ -210,10 +210,10 @@ async fn main() -> Result<()> {
     // let's listen to websocket input events
     let event_task = tokio::spawn(async move {
         use input::InputBackend;
-        use input::websocket::WebSocketInputBackend;
+        use input::web::WebServer;
         use std::net::SocketAddr;
         let bind_addr: SocketAddr = "0.0.0.0:8000".parse().expect("Invalid address");
-        let mut ws_backend = WebSocketInputBackend::new(bind_addr, ws_input_stream);
+        let mut ws_backend = WebServer::auto_detect_web_ui(bind_addr, ws_input_stream);
         if let Err(e) = ws_backend.run().await {
             tracing::error!("WebSocket backend error: {}", e);
         }
@@ -222,9 +222,8 @@ async fn main() -> Result<()> {
     // You can easily switch between different output backends here
     let backend_type = std::env::var("OUTPUT_BACKEND").unwrap_or_else(|_| "dbus".to_string());
 
-    let mut output = output::OutputBackendType::Udev(
-            output::udev::UdevOutput::new(dbus_input_stream)?,
-        );
+    let mut output =
+        output::OutputBackendType::Udev(output::udev::UdevOutput::new(dbus_input_stream)?);
 
     tracing::info!("Starting {} output backend...", backend_type);
     tracing::info!("Press Ctrl+C to gracefully shutdown the application");

@@ -1,164 +1,115 @@
-//! Websocket input handling backend, accepts a stream of JSON-encoded input events,
+//! WebSocket input handling utilities, accepts a stream of JSON-encoded input events,
 //! serialized from [`InputEventPacket`](crate::input::InputEventPacket).
-use crate::input::{InputBackend, InputEventPacket, InputEventStream};
+//!
+//! This module provides reusable WebSocket handlers for use with Axum web servers.
+//! It focuses on processing the WebSocket messages and integrating with the input
+//! event stream system.
+use crate::input::{InputEventPacket, InputEventStream};
+use axum::{
+    extract::{
+        ConnectInfo,
+        ws::{Message, WebSocket, WebSocketUpgrade},
+    },
+    response::IntoResponse,
+};
 use eyre::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
-use tokio::net::{TcpListener, TcpStream};
-use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite::Message};
 use tracing::{debug, error, info, warn};
 
-/// WebSocket input backend that listens for connections and processes input events.
-pub struct WebSocketInputBackend {
-    /// The address to bind the WebSocket server to.
-    bind_addr: SocketAddr,
-    /// The input event stream to send received events to.
-    event_stream: InputEventStream,
-}
+/// Process an Axum WebSocket connection
+pub async fn handle_axum_websocket(
+    socket: WebSocket,
+    event_stream: &InputEventStream,
+    addr: SocketAddr,
+) -> Result<()> {
+    let (mut sender, mut receiver) = socket.split();
 
-impl WebSocketInputBackend {
-    /// Creates a new WebSocket input backend.
-    ///
-    /// # Arguments
-    /// * `bind_addr` - The address to bind the WebSocket server to
-    /// * `event_stream` - The input event stream to send received events to
-    pub fn new(bind_addr: SocketAddr, event_stream: InputEventStream) -> Self {
-        Self {
-            bind_addr,
-            event_stream,
-        }
-    }
+    while let Some(msg) = receiver.next().await {
+        match msg {
+            Ok(Message::Text(text)) => {
+                debug!("Received text message from {}: {}", addr, text);
 
-    /// Handles a single WebSocket connection.
-    async fn handle_connection(&self, stream: TcpStream, addr: SocketAddr) -> Result<()> {
-        info!("New WebSocket connection from {}", addr);
-
-        let ws_stream = accept_async(stream)
-            .await
-            .context("Failed to accept WebSocket connection")?;
-
-        self.handle_websocket(ws_stream, addr).await
-    }
-
-    /// Handles messages from a WebSocket connection.
-    async fn handle_websocket(
-        &self,
-        mut ws_stream: WebSocketStream<TcpStream>,
-        addr: SocketAddr,
-    ) -> Result<()> {
-        while let Some(msg) = ws_stream.next().await {
-            match msg {
-                Ok(Message::Text(text)) => {
-                    debug!("Received text message from {}: {}", addr, text);
-
-                    match self.process_input_message(&text).await {
-                        Ok(_) => {
-                            // Send acknowledgment back to client
-                            if let Err(e) = ws_stream.send(Message::Text("ok".into())).await {
-                                warn!("Failed to send acknowledgment to {}: {}", addr, e);
-                                break;
-                            }
+                match process_input_message(event_stream, &text).await {
+                    Ok(_) => {
+                        // Send acknowledgment back to client
+                        if let Err(e) = sender.send(Message::Text("ok".into())).await {
+                            warn!("Failed to send acknowledgment to {}: {}", addr, e);
+                            break;
                         }
-                        Err(e) => {
-                            error!("Failed to process input message from {}: {}", addr, e);
-                            // Send error back to client
-                            let error_msg = format!("error: {}", e);
-                            if let Err(e) = ws_stream.send(Message::Text(error_msg.into())).await {
-                                warn!("Failed to send error message to {}: {}", addr, e);
-                                break;
-                            }
+                    }
+                    Err(e) => {
+                        error!("Failed to process input message from {}: {}", addr, e);
+                        // Send error back to client
+                        let error_msg = format!("error: {}", e);
+                        if let Err(e) = sender.send(Message::Text(error_msg.into())).await {
+                            warn!("Failed to send error message to {}: {}", addr, e);
+                            break;
                         }
                     }
                 }
-                Ok(Message::Binary(_)) => {
-                    warn!(
-                        "Received binary message from {}, but only text messages are supported",
-                        addr
-                    );
-                }
-                Ok(Message::Close(_)) => {
-                    info!("WebSocket connection from {} closed", addr);
-                    break;
-                }
-                Ok(Message::Ping(payload)) => {
-                    debug!("Received ping from {}", addr);
-                    if let Err(e) = ws_stream.send(Message::Pong(payload)).await {
-                        warn!("Failed to send pong to {}: {}", addr, e);
-                        break;
-                    }
-                }
-                Ok(Message::Pong(_)) => {
-                    debug!("Received pong from {}", addr);
-                }
-                Ok(Message::Frame(_)) => {
-                    debug!("Received raw frame from {}", addr);
-                    // Raw frames are typically handled internally by the WebSocket library
-                }
-                Err(e) => {
-                    error!("WebSocket error from {}: {}", addr, e);
+            }
+            Ok(Message::Binary(_)) => {
+                warn!(
+                    "Received binary message from {}, but only text messages are supported",
+                    addr
+                );
+            }
+            Ok(Message::Close(_)) => {
+                info!("WebSocket connection from {} closed", addr);
+                break;
+            }
+            Ok(Message::Ping(payload)) => {
+                debug!("Received ping from {}", addr);
+                if let Err(e) = sender.send(Message::Pong(payload)).await {
+                    warn!("Failed to send pong to {}: {}", addr, e);
                     break;
                 }
             }
+            Ok(Message::Pong(_)) => {
+                debug!("Received pong from {}", addr);
+            }
+            Err(e) => {
+                error!("WebSocket error from {}: {}", addr, e);
+                break;
+            }
         }
-
-        info!("WebSocket connection from {} terminated", addr);
-        Ok(())
     }
 
-    /// Processes an input message received via WebSocket.
-    async fn process_input_message(&self, message: &str) -> Result<()> {
-        let packet: InputEventPacket =
-            serde_json::from_str(message).context("Failed to deserialize input event packet")?;
-
-        debug!(
-            "Processing input packet from device '{}' with {} events",
-            packet.device_id,
-            packet.events.len()
-        );
-
-        self.event_stream
-            .send(packet)
-            .context("Failed to send input event packet to stream")?;
-
-        Ok(())
-    }
+    info!("WebSocket connection from {} terminated", addr);
+    Ok(())
 }
 
-#[async_trait::async_trait]
-impl InputBackend for WebSocketInputBackend {
-    async fn run(&mut self) -> Result<()> {
-        let listener = TcpListener::bind(self.bind_addr)
-            .await
-            .context(format!("Failed to bind to {}", self.bind_addr))?;
-
-        info!("WebSocket input backend listening on {}", self.bind_addr);
-
-        while let Ok((stream, addr)) = listener.accept().await {
-            let backend = self.clone();
-
-            // Spawn a new task for each connection
-            tokio::spawn(async move {
-                if let Err(e) = backend.handle_connection(stream, addr).await {
-                    error!("Error handling connection from {}: {}", addr, e);
-                }
-            });
+/// WebSocket handler function for Axum
+pub async fn ws_handler(
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    event_stream: axum::extract::State<InputEventStream>,
+) -> impl IntoResponse {
+    info!("New WebSocket connection from {}", addr);
+    ws.on_upgrade(move |socket| async move {
+        if let Err(e) = handle_axum_websocket(socket, &event_stream, addr).await {
+            error!("Error handling WebSocket connection from {}: {}", addr, e);
         }
-
-        Ok(())
-    }
+    })
 }
 
-// Implement Clone for WebSocketInputBackend to allow spawning tasks
-impl Clone for WebSocketInputBackend {
-    fn clone(&self) -> Self {
-        Self {
-            bind_addr: self.bind_addr,
-            event_stream: InputEventStream {
-                tx: self.event_stream.tx.clone(),
-                rx: self.event_stream.rx.clone(),
-            },
-        }
-    }
+/// Processes an input message received via WebSocket.
+pub async fn process_input_message(event_stream: &InputEventStream, message: &str) -> Result<()> {
+    let packet: InputEventPacket =
+        serde_json::from_str(message).context("Failed to deserialize input event packet")?;
+
+    debug!(
+        "Processing input packet from device '{}' with {} events",
+        packet.device_id,
+        packet.events.len()
+    );
+
+    event_stream
+        .send(packet)
+        .context("Failed to send input event packet to stream")?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -184,7 +135,9 @@ mod tests {
             x_delta: 10,
             y_delta: -5,
         }));
-        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: 65.to_string() }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease {
+            key: 65.to_string(),
+        }));
 
         packet
     }
@@ -209,11 +162,11 @@ mod tests {
     }
 }
 
-/// Example usage and documentation for the WebSocket input backend.
+/// Documentation for WebSocket input handling.
 ///
 /// # WebSocket Input Protocol
 ///
-/// The WebSocket server expects JSON messages in the format of [`InputEventPacket`].
+/// The WebSocket endpoint expects JSON messages in the format of [`InputEventPacket`].
 /// Each message should contain a device ID, timestamp, and list of input events.
 ///
 /// ## Example JSON Message
@@ -242,30 +195,12 @@ mod tests {
 /// }
 /// ```
 ///
-/// ## Usage Example
-///
-/// ```rust,no_run
-/// use std::net::SocketAddr;
-/// use plumbershim::input::{InputEventStream, websocket::WebSocketInputBackend, InputBackend};
-///
-/// #[tokio::main]
-/// async fn main() -> eyre::Result<()> {
-///     let bind_addr: SocketAddr = "127.0.0.1:8080".parse()?;
-///     let event_stream = InputEventStream::new();
-///     
-///     let mut backend = WebSocketInputBackend::new(bind_addr, event_stream);
-///     backend.run().await?;
-///     
-///     Ok(())
-/// }
-/// ```
-///
 /// ## Client Connection
 ///
 /// Clients can connect using any WebSocket library. For example, with JavaScript:
 ///
 /// ```javascript
-/// const ws = new WebSocket('ws://localhost:8080');
+/// const ws = new WebSocket('ws://localhost:8080/ws');
 ///
 /// ws.onopen = function() {
 ///     const packet = {

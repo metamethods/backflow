@@ -1,6 +1,8 @@
 # Backflow
 
-> A networked, extensible, remappable, open-source software-defined input bridge.
+> Accessible input for everyone, everywhere.
+>
+> Remap and route input from any device — adaptive controllers, arcade boards, or DIY hardware — with no kernel drivers, no lock-in.
 
 **Backflow** is a daemon that bridges unconventional input devices to standard HID events, powered by [InputPlumber](https://github.com/ShadowBlip/InputPlumber). Whether you're using analog controls, serial interfaces, web-based gamepads, MIDI devices, or other custom hardware, Backflow provides a modular way to route and remap any input into standard keyboard, mouse, or gamepad events.
 
@@ -13,20 +15,18 @@ This makes it ideal not just for gaming or custom hardware, but also for accessi
 
 ## Relation to InputPlumber
 
-Backflow is a companion project to InputPlumber, extending its reach to nonstandard, domain-specific, and experimental input sources — especially where native integration would be impractical or outside the project’s intended scope.
+Backflow is an input virtualization layer designed to complement tools like InputPlumber. It captures real-time input from unconventional, domain-specific, or remote sources — such as arcade IO boards, RS232 devices, MIDI controllers, browser-based PWAs, or assistive hardware — and exposes them to the Linux input stack as fully functional virtual devices.
 
-Rather than creating composite devices from other HID devices, Backflow connects to InputPlumber via D-Bus and injects input events into standalone target devices. This enables the full power of InputPlumber’s remapping and transformation engine to be applied to any input source — not just HID-compatible hardware.
+Input events are routed through userspace and emitted via uinput, allowing them to be recognized by games, desktop environments, and remapping tools like InputPlumber — all without requiring vendor drivers or kernel modules.
 
-This architecture cleanly separates concerns:
+This architecture cleanly separates responsibilities:
 
-- InputPlumber focuses on HID-to-HID remapping, event transformation, and composite device logic
-- Backflow creates and manages standalone target devices using InputPlumber’s D-Bus API, injecting real-time input events from sources like USB sniffers, MIDI devices, browser-based UIs, arcade IO boards, or other unconventional interfaces.
+- Backflow captures arbitrary input sources and emits them as native virtual devices via uinput
+- InputPlumber (optionally) handles remapping, transformation, and device composition within the HID domain
 
-Together, they form a flexible and extensible input framework capable of adapting to a wide range of devices and use cases — from gaming to accessibility tooling.
+Together, they provide a flexible and modular input pipeline for gaming, accessibility tooling, or custom interactive systems.
 
-By building on InputPlumber’s userspace HID infrastructure, Backflow enables arbitrary inputs to be remapped, virtualized, and exposed as standard devices — all without kernel drivers or vendor-specific Windows-only shims.
-
-> TL;DR: Backflow is a virtual device bridge for InputPlumber, letting you use any input source as a fully remappable HID device.
+> TL;DR: Backflow lets you turn anything into an input device — from arcade sliders to browser touchpads — no kernel drivers required.
 
 ## (Planned) Features
 
@@ -41,6 +41,31 @@ By building on InputPlumber’s userspace HID infrastructure, Backflow enables a
   - Novation MIDI hardware
   - OpenRGB-compatible devices
 - **Input remapping and transformation**, using InputPlumber's configuration and virtual device system
+
+## Getting Started
+
+> [!NOTE]
+> Backflow is currently in early development and not yet ready for production use. Expect breaking changes and limited documentation.
+> Backflow currently only supports the WebSocket remote routing backend, with no other input backends implemented yet.
+> The web UI is also included for testing purposes, they are not yet fully functional and will be improved in future releases.
+
+To get started with Backflow, build the project from source:
+
+```bash
+cargo build --release
+```
+
+Then run the daemon:
+
+```bash
+sudo ./target/release/backflow
+```
+
+This will start the Backflow daemon, listening for connections at `ws://localhost:8000/ws` by default.
+
+The web UI can be accessed at `http://localhost:8000/`, which provides a basic [brokenithm-kb](https://github.com/4yn/brokenithm-kb)-like interface for testing the WebSocket router backend, as a demo for the UMIGURI-style layout. More default layouts will be added in the future.
+
+Note that this layout only provides 16 slider zones, unlike a standard CHUNITHM controller which splits this vertically into 32 zones. The game however only uses 16 horizontal zones, so this is sufficient for testing purposes.
 
 ---
 

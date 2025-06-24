@@ -1,7 +1,7 @@
 // WebSocket handler for sending input events to plumbershim
 class WebSocketHandler {
   // todo: don't hardcode the ip
-  constructor(url = "ws://192.168.1.34:8000") {
+  constructor(url = `ws://${window.location.host}/ws`) {
     this.url = url;
     this.ws = null;
     this.isConnected = false;
