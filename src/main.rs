@@ -5,6 +5,8 @@ mod input;
 mod output;
 use eyre::Result;
 
+pub const PACKET_PROCESSING_TARGET: &str = "backflow::websocket::rgb";
+
 pub fn build_logger() -> Result<()> {
     // Create an env filter that defaults to "info" level if RUST_LOG is not set
     // But also specifically filters out noisy zbus and tungstenite logs
@@ -18,6 +20,7 @@ pub fn build_logger() -> Result<()> {
             .add_directive("tungstenite=warn".parse().unwrap())
             .add_directive("tokio_tungstenite=warn".parse().unwrap())
             .add_directive("async_io=warn".parse().unwrap())
+            .add_directive(format!("{}=warn", PACKET_PROCESSING_TARGET).parse().unwrap())
         // Keep our application logs at trace level
         // .add_directive("plumbershim=trace".parse().unwrap())
     });

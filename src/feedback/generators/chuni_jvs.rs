@@ -591,7 +591,8 @@ impl ChuniRgbService {
 
     /// Process a single LED packet and generate feedback events
     async fn process_led_packet(&mut self, packet: &ChuniLedDataPacket) -> eyre::Result<()> {
-        tracing::debug!(
+        tracing::trace!(
+            target: crate::PACKET_PROCESSING_TARGET,
             "Processing LED packet for board {} with {} LEDs",
             packet.board,
             packet.led_count()
@@ -620,6 +621,7 @@ impl ChuniRgbService {
                     tracing::error!("Failed to send feedback packet: {}", e);
                 } else {
                     tracing::trace!(
+                        target: crate::PACKET_PROCESSING_TARGET,
                         "Successfully sent feedback packet with {} LED events",
                         event_count
                     );
@@ -660,7 +662,8 @@ impl ChuniRgbService {
                 }));
             }
 
-            tracing::debug!(
+            tracing::trace!(
+                target: crate::PACKET_PROCESSING_TARGET,
                 "Generated {} LED feedback events for slider (clamped to {} lights, offset by {}) - sending as single packet for better web UI performance",
                 events.len(),
                 self.config.slider_clamp_lights,

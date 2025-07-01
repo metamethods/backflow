@@ -279,34 +279,71 @@ impl InputBackend for WebServer {
             let clients = connected_clients_for_broadcast;
             tokio::spawn(async move {
                 loop {
-                    match feedback_rx.recv() {
+                    // Use try_recv with a small sleep to make this non-blocking and responsive
+                    match feedback_rx.try_recv() {
                         Ok(feedback_packet) => {
-                            debug!(
+                            let start_time = std::time::Instant::now();
+                            trace!(
+                                target: crate::PACKET_PROCESSING_TARGET,
                                 "Broadcasting feedback packet to all clients: device_id={}, events={}",
                                 feedback_packet.device_id,
                                 feedback_packet.events.len()
                             );
 
-                            // Send to all connected clients
-                            let mut clients_guard = clients.write().await;
-                            let initial_count = clients_guard.len();
-                            clients_guard.retain(|tx| {
-                                !tx.is_closed() && tx.send(feedback_packet.clone()).is_ok()
-                            });
+                            // Send to all connected clients with minimal lock time
+                            let clients_to_send = {
+                                let clients_guard = clients.read().await;
+                                clients_guard.clone() // Clone the senders to release the lock quickly
+                            };
 
-                            let final_count = clients_guard.len();
-                            if final_count > 0 {
-                                trace!("Feedback broadcast sent to {} clients", final_count);
+                            let mut successful_sends = 0;
+                            let mut failed_sends = 0;
+
+                            for tx in &clients_to_send {
+                                if !tx.is_closed() {
+                                    match tx.send(feedback_packet.clone()) {
+                                        Ok(_) => successful_sends += 1,
+                                        Err(_) => failed_sends += 1,
+                                    }
+                                } else {
+                                    failed_sends += 1;
+                                }
                             }
-                            if initial_count != final_count {
-                                info!(
-                                    "Cleaned up {} disconnected clients",
-                                    initial_count - final_count
+
+                            // Only cleanup disconnected clients if there were failures
+                            if failed_sends > 0 {
+                                let mut clients_guard = clients.write().await;
+                                let initial_count = clients_guard.len();
+                                clients_guard.retain(|tx| !tx.is_closed());
+                                let final_count = clients_guard.len();
+
+                                if initial_count != final_count {
+                                    debug!(
+                                        "Cleaned up {} disconnected clients (was {}, now {})",
+                                        initial_count - final_count,
+                                        initial_count,
+                                        final_count
+                                    );
+                                }
+                            }
+
+                            let elapsed = start_time.elapsed();
+
+                            if successful_sends > 0 {
+                                trace!(
+                                    target: crate::PACKET_PROCESSING_TARGET,
+                                    "Feedback broadcast sent to {} clients in {}μs",
+                                    successful_sends,
+                                    elapsed.as_micros()
                                 );
                             }
                         }
-                        Err(e) => {
-                            error!("Failed to receive feedback event: {}", e);
+                        Err(crossbeam::channel::TryRecvError::Empty) => {
+                            // No data available, sleep briefly to yield control and reduce CPU usage
+                            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+                        }
+                        Err(crossbeam::channel::TryRecvError::Disconnected) => {
+                            error!("Feedback stream disconnected, stopping broadcast task");
                             break;
                         }
                     }
@@ -705,7 +742,7 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
 
     // Clone state for the tasks
     let input_stream = state.input_stream.clone();
-    let connected_clients = state.connected_clients.clone();
+    let feedback_stream_for_client = state.feedback_stream.clone();
 
     // Wrap sender in Arc<Mutex> to share between tasks
     let sender = Arc::new(tokio::sync::Mutex::new(sender));
@@ -743,20 +780,16 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
                                 feedback_packet.events.len()
                             );
 
-                            // Broadcast to all connected clients (including sender)
-                            let clients = connected_clients.read().await;
-                            let mut sent_count = 0;
-                            for client in clients.iter() {
-                                if !client.is_closed()
-                                    && client.send(feedback_packet.clone()).is_ok()
-                                {
-                                    sent_count += 1;
-                                }
+                            // Instead of broadcasting directly here, send it through the main feedback stream
+                            // This ensures all feedback goes through the same unified broadcast mechanism
+                            if let Err(e) = feedback_stream_for_client.send(feedback_packet) {
+                                error!("Failed to send client feedback to main stream: {}", e);
+                            } else {
+                                debug!(
+                                    "Client feedback packet from {} forwarded to main broadcast system",
+                                    addr
+                                );
                             }
-                            info!(
-                                "Broadcasted feedback packet from {} to {} clients",
-                                addr, sent_count
-                            );
                         } else {
                             warn!(
                                 "Failed to parse message from {} as either input or feedback packet",
@@ -789,14 +822,9 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
                 }
             }
 
-            // Clean up this client from the connected clients list
-            let mut clients = connected_clients.write().await;
-            clients.retain(|client| !client.is_closed());
-            info!(
-                "Client {} removed from feedback broadcast list. Remaining clients: {}",
-                addr,
-                clients.len()
-            );
+            // Note: Client cleanup from the broadcast list happens automatically
+            // when the feedback channel is dropped and detected as closed
+            debug!("Input task for client {} finished", addr);
         })
     };
 
@@ -805,7 +833,9 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
         let sender = sender.clone();
         tokio::spawn(async move {
             while let Some(feedback_packet) = feedback_rx.recv().await {
+                let start_time = std::time::Instant::now();
                 trace!(
+                    target: crate::PACKET_PROCESSING_TARGET,
                     "Sending feedback packet to {}: device_id={}, events={}",
                     addr,
                     feedback_packet.device_id,
@@ -818,6 +848,16 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
                         if let Err(e) = sender_guard.send(Message::Text(json.into())).await {
                             warn!("Failed to send feedback to {}: {}", addr, e);
                             break;
+                        }
+                        // Explicitly flush the WebSocket to ensure immediate sending
+                        if let Err(e) = sender_guard.flush().await {
+                            warn!("Failed to flush WebSocket for {}: {}", addr, e);
+                            break;
+                        }
+
+                        let elapsed = start_time.elapsed();
+                        if elapsed.as_millis() > 5 {
+                            debug!("Slow WebSocket send to {}: {}ms", addr, elapsed.as_millis());
                         }
                     }
                     Err(e) => {
