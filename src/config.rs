@@ -166,6 +166,10 @@ pub struct DeviceConfig {
     /// Key remapping from custom keys to evdev codes
     #[serde(default)]
     pub remap: HashMap<String, String>,
+    /// When true, only keys defined in the remap table are allowed through (whitelist mode)
+    /// When false (default), undefined keys pass through unchanged
+    #[serde(default)]
+    pub remap_whitelist: bool,
 }
 
 impl Default for DeviceConfig {
@@ -174,6 +178,7 @@ impl Default for DeviceConfig {
             map_backend: "uinput".to_string(),
             device_type: "keyboard".to_string(),
             remap: HashMap::new(),
+            remap_whitelist: false,
         }
     }
 }
@@ -362,6 +367,7 @@ mod tests {
         assert_eq!(slider_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
         assert_eq!(slider_config.remap.get("SLIDER_2"), Some(&"KEY_S".to_string()));
         assert_eq!(slider_config.remap.get("SLIDER_3"), Some(&"KEY_D".to_string()));
+        assert_eq!(slider_config.remap_whitelist, false); // Should default to false
         
         // Test custom gamepad
         let gamepad_config = config.device.get("custom_gamepad").unwrap();
@@ -369,9 +375,66 @@ mod tests {
         assert_eq!(gamepad_config.device_type, "keyboard");
         assert_eq!(gamepad_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
         assert_eq!(gamepad_config.remap.get("BUTTON_A"), Some(&"KEY_Z".to_string()));
+        assert_eq!(gamepad_config.remap_whitelist, false); // Should default to false
         
         // Test other configuration sections remain working
         assert!(config.input.web.is_some());
         assert!(config.output.uinput.enabled);
+    }
+
+    #[test]
+    fn test_device_config_with_whitelist_enabled() {
+        let toml_str = r#"
+            [device."whitelist_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+            remap_whitelist = true
+
+            [device."whitelist_device".remap]
+            "SLIDER_1" = "KEY_A"
+            "GAME_1" = "KEY_SPACE"
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("whitelist_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        assert_eq!(device_config.remap_whitelist, true);
+        assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
+        assert_eq!(device_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
+    }
+
+    #[test]
+    fn test_device_config_with_whitelist_enabled_no_remap() {
+        let toml_str = r#"
+            [device."ignore_all_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+            remap_whitelist = true
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("ignore_all_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        assert_eq!(device_config.remap_whitelist, true);
+        assert!(device_config.remap.is_empty());
+    }
+
+    #[test]
+    fn test_device_config_with_whitelist_explicitly_disabled() {
+        let toml_str = r#"
+            [device."passthrough_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+            remap_whitelist = false
+
+            [device."passthrough_device".remap]
+            "SLIDER_1" = "KEY_A"
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("passthrough_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        assert_eq!(device_config.remap_whitelist, false);
+        assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
     }
 }

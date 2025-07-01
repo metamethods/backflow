@@ -44,6 +44,25 @@ map_backend = "uinput"
 device_type = "keyboard"
 # No remap section means standard keys like "KEY_A", "KEY_SPACE" pass through unchanged
 
+# Example device with whitelist enabled - only mapped keys are allowed
+[device."whitelist_controller"]
+map_backend = "uinput"
+device_type = "keyboard"
+remap_whitelist = true  # Only keys in the remap table will be processed
+
+[device."whitelist_controller".remap]
+"SLIDER_1" = "KEY_Q"
+"SLIDER_2" = "KEY_W"
+"GAME_1" = "KEY_SPACE"
+# All other input keys will be ignored/filtered out
+
+# Example device that ignores all inputs (whitelist enabled, no remap table)
+[device."ignored_device"]
+map_backend = "uinput" 
+device_type = "keyboard"
+remap_whitelist = true
+# No remap section means ALL inputs from this device will be ignored
+
 [feedback.chuniio]
 socket_path = "/tmp/chuniio_rgb.sock"
 slider_clamp_lights = 16

@@ -32,14 +32,18 @@ impl DeviceFilter {
         
         if let Some(config) = device_config {
             debug!(
-                "Applying device config for device '{}': backend={}, type={}",
-                packet.device_id, config.map_backend, config.device_type
+                "Applying device config for device '{}': backend={}, type={}, whitelist={}",
+                packet.device_id, config.map_backend, config.device_type, config.remap_whitelist
             );
             
-            // Transform all events in the packet
-            for event in &mut packet.events {
-                self.transform_event(event, config)?;
+            // Transform and filter events based on device configuration
+            let mut filtered_events = Vec::new();
+            for mut event in packet.events.into_iter() {
+                if self.transform_and_filter_event(&mut event, config)? {
+                    filtered_events.push(event);
+                }
             }
+            packet.events = filtered_events;
         } else {
             debug!(
                 "No device config found for device '{}', using default transformation",
@@ -50,26 +54,37 @@ impl DeviceFilter {
         Ok(packet)
     }
 
-    /// Transform a single input event based on device configuration
-    fn transform_event(&self, event: &mut InputEvent, config: &DeviceConfig) -> Result<()> {
+    /// Transform and filter a single input event based on device configuration
+    /// Returns true if the event should be kept, false if it should be filtered out
+    fn transform_and_filter_event(&self, event: &mut InputEvent, config: &DeviceConfig) -> Result<bool> {
         match event {
             InputEvent::Keyboard(keyboard_event) => {
-                self.transform_keyboard_event(keyboard_event, config)?;
+                self.transform_and_filter_keyboard_event(keyboard_event, config)
             }
             InputEvent::Pointer(_) => {
                 // Pointer events don't typically need key remapping
                 // but could be extended in the future for device-specific transformations
+                // For now, always allow pointer events through
+                Ok(true)
             }
             InputEvent::Joystick(_) => {
                 // Joystick events could be remapped to keyboard events
                 // or other transformations in the future
+                // For now, always allow joystick events through
+                Ok(true)
             }
         }
+    }
+
+    /// Transform a single input event based on device configuration (legacy method for compatibility)
+    fn transform_event(&self, event: &mut InputEvent, config: &DeviceConfig) -> Result<()> {
+        self.transform_and_filter_event(event, config)?;
         Ok(())
     }
 
-    /// Transform keyboard events based on device remapping rules
-    fn transform_keyboard_event(&self, event: &mut KeyboardEvent, config: &DeviceConfig) -> Result<()> {
+    /// Transform keyboard events based on device remapping rules and whitelist settings
+    /// Returns true if the event should be kept, false if it should be filtered out
+    fn transform_and_filter_keyboard_event(&self, event: &mut KeyboardEvent, config: &DeviceConfig) -> Result<bool> {
         let key = match event {
             KeyboardEvent::KeyPress { key } => key,
             KeyboardEvent::KeyRelease { key } => key,
@@ -79,7 +94,18 @@ impl DeviceFilter {
         if let Some(remapped_key) = config.remap.get(key) {
             debug!("Remapping key '{}' to '{}' for device", key, remapped_key);
             *key = remapped_key.clone();
-        } else if !Self::is_standard_evdev_key(key) {
+            return Ok(true); // Always keep remapped keys
+        }
+
+        // Handle whitelist mode
+        if config.remap_whitelist {
+            // In whitelist mode, only allow keys that are in the remap table
+            debug!("Filtering out key '{}' (not in whitelist) for device", key);
+            return Ok(false); // Filter out keys not in remap table
+        }
+
+        // In non-whitelist mode, check if it's a custom key without remapping
+        if !Self::is_standard_evdev_key(key) {
             // If it's not a standard evdev key and no remapping is defined, warn
             warn!(
                 "Custom key '{}' has no remapping defined for device. Event may be ignored by output backend.",
@@ -87,6 +113,12 @@ impl DeviceFilter {
             );
         }
 
+        Ok(true) // Keep the event in non-whitelist mode
+    }
+
+    /// Transform keyboard events based on device remapping rules (legacy method for compatibility)
+    fn transform_keyboard_event(&self, event: &mut KeyboardEvent, config: &DeviceConfig) -> Result<()> {
+        self.transform_and_filter_keyboard_event(event, config)?;
         Ok(())
     }
 
@@ -139,6 +171,7 @@ mod tests {
             map_backend: "uinput".to_string(),
             device_type: "keyboard".to_string(),
             remap,
+            remap_whitelist: false,
         };
         
         device_configs.insert("test_device".to_string(), device_config);
@@ -246,5 +279,176 @@ mod tests {
         assert!(!DeviceFilter::is_standard_evdev_key("SLIDER_1"));
         assert!(!DeviceFilter::is_standard_evdev_key("GAME_1"));
         assert!(!DeviceFilter::is_standard_evdev_key("CUSTOM_KEY"));
+    }
+
+    #[test]
+    fn test_remap_whitelist_enabled_with_mappings() {
+        let mut device_configs = HashMap::new();
+        
+        // Create a test device config with whitelist enabled
+        let mut remap = HashMap::new();
+        remap.insert("SLIDER_1".to_string(), "KEY_A".to_string());
+        remap.insert("GAME_1".to_string(), "KEY_SPACE".to_string());
+        
+        let device_config = DeviceConfig {
+            map_backend: "uinput".to_string(),
+            device_type: "keyboard".to_string(),
+            remap,
+            remap_whitelist: true,
+        };
+        
+        device_configs.insert("test_device".to_string(), device_config);
+        
+        let config = AppConfig {
+            device: device_configs,
+            ..Default::default()
+        };
+        
+        let filter = DeviceFilter::new(&config);
+        
+        // Create a packet with mixed keys - some in remap table, some not
+        let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "SLIDER_1".to_string(), // Should be remapped and kept
+        }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "SLIDER_2".to_string(), // Should be filtered out (not in remap table)
+        }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease {
+            key: "GAME_1".to_string(), // Should be remapped and kept
+        }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "KEY_B".to_string(), // Standard key but should be filtered out (not in remap table)
+        }));
+        
+        let transformed_packet = filter.transform_packet(packet).unwrap();
+        
+        // Should only have 2 events (the ones in the remap table)
+        assert_eq!(transformed_packet.events.len(), 2);
+        
+        // Check that the kept events were remapped correctly
+        match &transformed_packet.events[0] {
+            InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+                assert_eq!(key, "KEY_A"); // SLIDER_1 -> KEY_A
+            }
+            _ => panic!("Expected KeyPress event"),
+        }
+        
+        match &transformed_packet.events[1] {
+            InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
+                assert_eq!(key, "KEY_SPACE"); // GAME_1 -> KEY_SPACE
+            }
+            _ => panic!("Expected KeyRelease event"),
+        }
+    }
+
+    #[test]
+    fn test_remap_whitelist_enabled_no_mappings() {
+        let mut device_configs = HashMap::new();
+        
+        // Create a test device config with whitelist enabled but no remap table
+        let device_config = DeviceConfig {
+            map_backend: "uinput".to_string(),
+            device_type: "keyboard".to_string(),
+            remap: HashMap::new(), // Empty remap table
+            remap_whitelist: true,
+        };
+        
+        device_configs.insert("test_device".to_string(), device_config);
+        
+        let config = AppConfig {
+            device: device_configs,
+            ..Default::default()
+        };
+        
+        let filter = DeviceFilter::new(&config);
+        
+        // Create a packet with various keys
+        let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "SLIDER_1".to_string(),
+        }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "KEY_A".to_string(),
+        }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "BTN_LEFT".to_string(),
+        }));
+        
+        let transformed_packet = filter.transform_packet(packet).unwrap();
+        
+        // All events should be filtered out since whitelist is enabled but remap table is empty
+        assert_eq!(transformed_packet.events.len(), 0);
+    }
+
+    #[test]
+    fn test_remap_whitelist_disabled_default_behavior() {
+        let mut device_configs = HashMap::new();
+        
+        // Create a test device config with whitelist disabled (default behavior)
+        let mut remap = HashMap::new();
+        remap.insert("SLIDER_1".to_string(), "KEY_A".to_string());
+        
+        let device_config = DeviceConfig {
+            map_backend: "uinput".to_string(),
+            device_type: "keyboard".to_string(),
+            remap,
+            remap_whitelist: false, // Explicitly disabled
+        };
+        
+        device_configs.insert("test_device".to_string(), device_config);
+        
+        let config = AppConfig {
+            device: device_configs,
+            ..Default::default()
+        };
+        
+        let filter = DeviceFilter::new(&config);
+        
+        // Create a packet with mixed keys
+        let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "SLIDER_1".to_string(), // Should be remapped
+        }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "SLIDER_2".to_string(), // Should pass through unchanged
+        }));
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "KEY_B".to_string(), // Should pass through unchanged
+        }));
+        
+        let transformed_packet = filter.transform_packet(packet).unwrap();
+        
+        // All events should be kept in non-whitelist mode
+        assert_eq!(transformed_packet.events.len(), 3);
+        
+        // Check transformations
+        match &transformed_packet.events[0] {
+            InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+                assert_eq!(key, "KEY_A"); // SLIDER_1 -> KEY_A
+            }
+            _ => panic!("Expected KeyPress event"),
+        }
+        
+        match &transformed_packet.events[1] {
+            InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+                assert_eq!(key, "SLIDER_2"); // unchanged
+            }
+            _ => panic!("Expected KeyPress event"),
+        }
+        
+        match &transformed_packet.events[2] {
+            InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+                assert_eq!(key, "KEY_B"); // unchanged
+            }
+            _ => panic!("Expected KeyPress event"),
+        }
+    }
+
+    #[test]
+    fn test_remap_whitelist_default_value() {
+        // Test that remap_whitelist defaults to false
+        let default_config = DeviceConfig::default();
+        assert_eq!(default_config.remap_whitelist, false);
     }
 }
