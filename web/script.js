@@ -160,6 +160,7 @@ class WebSocketHandler {
       cell.style.removeProperty('background-color');
       cell.style.removeProperty('box-shadow');
       cell.classList.remove('rgb-active');
+      cell.removeAttribute('data-rgb-color');
       return;
     }
 
@@ -177,9 +178,13 @@ class WebSocketHandler {
       color = `rgba(${r}, ${g}, ${b}, ${alpha})`;
     }
 
-    // Apply the RGB color
+    // Store the RGB color for reference and create inset glow effect
+    cell.setAttribute('data-rgb-color', color);
     cell.style.backgroundColor = color;
-    cell.style.boxShadow = `0 0 15px ${color}`;
+    
+    // Use inset box-shadow to prevent layout shifts, with the RGB color for glow
+    const glowColor = `rgba(${r}, ${g}, ${b}, 0.6)`;
+    cell.style.boxShadow = `inset 0 0 20px ${glowColor}`;
     cell.classList.add('rgb-active');
   }
 

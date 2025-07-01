@@ -55,6 +55,9 @@ body {
     transition: none; /* Instant feedback for gaming */
     position: relative;
     min-height: 50px; /* Ensure minimum touch target size */
+    box-sizing: border-box; /* Prevent layout shifts */
+    /* Reserve space for potential box-shadow to prevent jumping */
+    outline: 1px solid transparent;
 }
 
 /* Add visual indicators for different cell types */
@@ -81,18 +84,24 @@ body {
 
 /* RGB feedback styling - lower priority than active state */
 .grid-cell.rgb-active {
-    transition: background-color 0.1s ease, box-shadow 0.1s ease;
+    transition: none;
+    /* Ensure no layout shifts by maintaining consistent border/padding */
+    box-sizing: border-box;
 }
 
 /* When both RGB and touch are active, touch takes precedence */
 .grid-cell.active.rgb-active {
     background-color: white !important;
     color: black !important;
+    /* Maintain the inset glow even when active, but dimmed */
+    box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.3) !important;
+    /* Remove transition for instant feedback when touched */
+    transition: none !important;
 }
 
-/* RGB glow effect when not actively touched */
+/* RGB glow effect when not actively touched - inset prevents layout shifts */
 .grid-cell.rgb-active:not(.active) {
-    border: 1px solid rgba(255, 255, 255, 0.3);
+    /* The actual glow is set via JavaScript with the RGB color */
 }
 
 /* Fallback for Safari touch issues */
