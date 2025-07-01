@@ -44,7 +44,7 @@ use std::{
     },
 };
 use tokio::sync::{RwLock, broadcast};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Connection ID type for tracking WebSocket connections
 pub type ConnectionId = u64;
@@ -335,7 +335,7 @@ pub async fn feedback_broadcaster_task(
     loop {
         match feedback_stream.receive() {
             Ok(packet) => {
-                debug!(
+                trace!(
                     "Broadcasting feedback packet from device '{}' with {} events",
                     packet.device_id,
                     packet.events.len()

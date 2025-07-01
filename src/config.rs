@@ -133,7 +133,7 @@ pub struct FeedbackConfig {
     // pub rgb:
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChuniIoRgbConfig {
     /// Path to the Unix domain socket for ChuniIo RGB feedback, usually from Outflow bridge from inside Wine
     pub socket_path: PathBuf,

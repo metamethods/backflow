@@ -116,10 +116,25 @@ class WebSocketHandler {
 
   handleFeedbackPacket(packet) {
     console.log("🎨 Processing feedback packet:", packet);
+    
+    // Batch DOM updates for better performance
+    const ledUpdates = [];
+    
+    // Collect all LED updates first
     for (const event of packet.events) {
       if (event.Led && event.Led.Set) {
-        this.handleLedEvent(event.Led.Set);
+        ledUpdates.push(event.Led.Set);
       }
+    }
+    
+    // Apply all LED updates in a single batch to minimize DOM reflows
+    if (ledUpdates.length > 0) {
+      // Use requestAnimationFrame to batch all DOM updates together
+      requestAnimationFrame(() => {
+        for (const ledEvent of ledUpdates) {
+          this.handleLedEvent(ledEvent);
+        }
+      });
     }
   }
 

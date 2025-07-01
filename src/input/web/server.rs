@@ -17,7 +17,7 @@ use futures_util::{sink::SinkExt, stream::StreamExt};
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::frontend;
 
@@ -296,7 +296,7 @@ impl InputBackend for WebServer {
 
                             let final_count = clients_guard.len();
                             if final_count > 0 {
-                                info!("Feedback broadcast sent to {} clients", final_count);
+                                trace!("Feedback broadcast sent to {} clients", final_count);
                             }
                             if initial_count != final_count {
                                 info!(
@@ -805,7 +805,7 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
         let sender = sender.clone();
         tokio::spawn(async move {
             while let Some(feedback_packet) = feedback_rx.recv().await {
-                debug!(
+                trace!(
                     "Sending feedback packet to {}: device_id={}, events={}",
                     addr,
                     feedback_packet.device_id,

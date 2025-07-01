@@ -135,8 +135,17 @@ impl Backend {
                 chuniio_config.socket_path
             );
 
-            // TODO: Implement ChuniIO RGB feedback service
-            tracing::warn!("ChuniIO RGB feedback service not yet implemented");
+            let config = chuniio_config.clone();
+            let feedback_stream = self.streams.feedback.clone();
+
+            let handle = tokio::spawn(async move {
+                use crate::feedback::generators::chuni_jvs::run_chuniio_service;
+                if let Err(e) = run_chuniio_service(config, feedback_stream).await {
+                    tracing::error!("ChuniIO RGB feedback service error: {}", e);
+                }
+            });
+
+            self.feedback_handles.push(handle);
         }
 
         Ok(())

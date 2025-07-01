@@ -32,9 +32,11 @@
 //!
 //! Keep note that the slider LED indexes are in reverse order, so the first LED is on the right side of the slider,
 
+use crate::config::ChuniIoRgbConfig;
 use crate::feedback::FeedbackEvent;
+use tokio::io::AsyncReadExt;
+use tokio::net::UnixListener;
 
-// LED packet protocol constants
 #[allow(dead_code)]
 const LED_PACKET_FRAMING: u8 = 0xE0;
 #[allow(dead_code)]
@@ -141,25 +143,43 @@ impl ChuniLedDataPacket {
         reversed
     }
 
-    /// Clamp slider LEDs to a smaller number of zones (useful for controllers with fewer LEDs)
+    /// Clamp slider LEDs to a smaller number of zones by selecting key LEDs only
+    ///
+    /// The 31 slider LEDs alternate between keys and dividers. For clamping, we select
+    /// only the key LEDs (every other LED) to skip the divider LEDs at the edges.
+    /// This gives us up to 16 key LEDs (indices 0, 2, 4, 6, ..., 30).
     pub fn clamp_slider_to_zones(leds: [Rgb; 31], zones: usize) -> Vec<Rgb> {
         if zones == 0 {
             return Vec::new();
         }
 
+        // Extract key LEDs only (every other LED, starting from index 0)
+        // This skips the divider LEDs and gives us the 16 key LEDs
+        let key_leds: Vec<Rgb> = leds
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| i % 2 == 0) // Take every other LED (keys, not dividers)
+            .map(|(_, led)| *led)
+            .collect();
+
+        // If zones >= number of key LEDs, just return all key LEDs
+        if zones >= key_leds.len() {
+            return key_leds;
+        }
+
         let mut clamped = Vec::with_capacity(zones);
 
         for zone_idx in 0..zones {
-            let start_led = (zone_idx * 31) / zones;
-            let end_led = ((zone_idx + 1) * 31) / zones;
+            let start_key = (zone_idx * key_leds.len()) / zones;
+            let end_key = ((zone_idx + 1) * key_leds.len()) / zones;
 
-            // Average the RGB values of the LEDs in this zone
+            // Average the RGB values of the key LEDs in this zone
             let mut total_r = 0u32;
             let mut total_g = 0u32;
             let mut total_b = 0u32;
             let mut count = 0u32;
 
-            for led in &leds[start_led..end_led] {
+            for led in &key_leds[start_key..end_key] {
                 total_r += led.r as u32;
                 total_g += led.g as u32;
                 total_b += led.b as u32;
@@ -463,4 +483,200 @@ mod tests {
             panic!("Expected slider data");
         }
     }
+}
+/// CHUNITHM RGB feedback service that listens on a Unix domain socket
+/// and processes JVS-like LED data packets
+pub struct ChuniRgbService {
+    config: ChuniIoRgbConfig,
+    parser: ChuniLedParser,
+    feedback_stream: crate::feedback::FeedbackEventStream,
+}
+
+impl ChuniRgbService {
+    /// Create a new CHUNITHM RGB feedback service
+    pub fn new(
+        config: ChuniIoRgbConfig,
+        feedback_stream: crate::feedback::FeedbackEventStream,
+    ) -> Self {
+        Self {
+            config,
+            parser: ChuniLedParser::new(),
+            feedback_stream,
+        }
+    }
+
+    /// Start the service and listen for LED data on the Unix domain socket
+    pub async fn run(&mut self) -> eyre::Result<()> {
+        tracing::info!(
+            "Starting CHUNITHM RGB service listening on: {:?}",
+            self.config.socket_path
+        );
+
+        // Remove socket file if it exists
+        if self.config.socket_path.exists() {
+            std::fs::remove_file(&self.config.socket_path)?;
+            tracing::debug!("Removed existing socket file");
+        }
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = self.config.socket_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let listener = UnixListener::bind(&self.config.socket_path)?;
+        tracing::info!("CHUNITHM RGB service bound to socket, waiting for connections...");
+
+        loop {
+            match listener.accept().await {
+                Ok((stream, _addr)) => {
+                    tracing::info!("New CHUNITHM RGB client connected");
+                    if let Err(e) = self.handle_client(stream).await {
+                        tracing::error!("Error handling CHUNITHM RGB client: {}", e);
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Error accepting CHUNITHM RGB connection: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    /// Handle a single client connection
+    async fn handle_client(&mut self, mut stream: tokio::net::UnixStream) -> eyre::Result<()> {
+        let mut buffer = vec![0u8; 4096];
+        let mut accumulated_data = Vec::new();
+
+        loop {
+            match stream.read(&mut buffer).await {
+                Ok(0) => {
+                    tracing::info!("CHUNITHM RGB client disconnected");
+                    break;
+                }
+                Ok(bytes_read) => {
+                    accumulated_data.extend_from_slice(&buffer[..bytes_read]);
+
+                    // Try to parse packets from accumulated data
+                    match self.parser.parse_packets(&accumulated_data) {
+                        Ok(packets) => {
+                            for packet in packets {
+                                self.process_led_packet(&packet).await?;
+                            }
+                            // Clear processed data - in a real implementation, you'd want to
+                            // track how much data was consumed and only clear that portion
+                            accumulated_data.clear();
+                        }
+                        Err(e) => {
+                            tracing::debug!("Failed to parse LED packet: {}", e);
+                            // Don't clear data immediately in case we need more bytes
+                            // Only clear if buffer gets too large
+                            if accumulated_data.len() > 8192 {
+                                tracing::warn!(
+                                    "Clearing large accumulated buffer due to parse errors"
+                                );
+                                accumulated_data.clear();
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Error reading from CHUNITHM RGB client: {}", e);
+                    break;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process a single LED packet and generate feedback events
+    async fn process_led_packet(&mut self, packet: &ChuniLedDataPacket) -> eyre::Result<()> {
+        tracing::debug!(
+            "Processing LED packet for board {} with {} LEDs",
+            packet.board,
+            packet.led_count()
+        );
+
+        // Only process slider packets for now (board 2)
+        if packet.board == 2 {
+            let events = self.generate_slider_feedback_events(packet)?;
+
+            // Send all LED events in one packet - this is more efficient for the web UI
+            // which can batch process all the LED updates at once
+            if !events.is_empty() {
+                let event_count = events.len();
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64;
+
+                let feedback_packet = crate::feedback::FeedbackEventPacket {
+                    device_id: "chunithm_slider".to_string(),
+                    timestamp,
+                    events, // Send all LED events together for better performance
+                };
+
+                if let Err(e) = self.feedback_stream.send(feedback_packet) {
+                    tracing::error!("Failed to send feedback packet: {}", e);
+                } else {
+                    tracing::trace!(
+                        "Successfully sent feedback packet with {} LED events",
+                        event_count
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Generate feedback events specifically for slider LED data
+    fn generate_slider_feedback_events(
+        &self,
+        packet: &ChuniLedDataPacket,
+    ) -> eyre::Result<Vec<FeedbackEvent>> {
+        let mut events = Vec::new();
+
+        if let LedBoardData::Slider(slider_leds) = &packet.data {
+            // Apply clamping if configured
+            let processed_leds = if self.config.slider_clamp_lights < 31 {
+                ChuniLedDataPacket::clamp_slider_to_zones(
+                    *slider_leds,
+                    self.config.slider_clamp_lights as usize,
+                )
+            } else {
+                slider_leds.to_vec()
+            };
+
+            // Generate LED events with ID offset
+            for (index, rgb) in processed_leds.iter().enumerate() {
+                let led_id = (index as u32 + self.config.slider_id_offset) as u8;
+
+                events.push(FeedbackEvent::Led(crate::feedback::LedEvent::Set {
+                    led_id,
+                    on: rgb.r > 0 || rgb.g > 0 || rgb.b > 0,
+                    brightness: Some(rgb.r.max(rgb.g).max(rgb.b)),
+                    rgb: Some((rgb.r, rgb.g, rgb.b)),
+                }));
+            }
+
+            tracing::debug!(
+                "Generated {} LED feedback events for slider (clamped to {} lights, offset by {}) - sending as single packet for better web UI performance",
+                events.len(),
+                self.config.slider_clamp_lights,
+                self.config.slider_id_offset
+            );
+        }
+
+        Ok(events)
+    }
+}
+
+/// Create and run a CHUNITHM RGB feedback service
+pub async fn run_chuniio_service(
+    config: ChuniIoRgbConfig,
+    feedback_stream: crate::feedback::FeedbackEventStream,
+) -> eyre::Result<()> {
+    let mut service = ChuniRgbService::new(config, feedback_stream);
+    service.run().await
 }
