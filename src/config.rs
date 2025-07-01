@@ -3,6 +3,7 @@
 // todo: finish this file
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -13,6 +14,9 @@ pub struct AppConfig {
     pub output: OutputConfig,
     #[serde(default)]
     pub feedback: FeedbackConfig,
+    /// Per-device configurations for filtering and remapping
+    #[serde(default)]
+    pub device: HashMap<String, DeviceConfig>,
 }
 
 impl AppConfig {
@@ -151,6 +155,33 @@ pub struct ChuniIoRgbConfig {
 fn default_slider_lights() -> u32 {
     32
 }
+
+/// Configuration for a specific device, including backend routing and key remapping
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct DeviceConfig {
+    /// Which output backend this device should route to (e.g., "uinput", "inputplumber")
+    pub map_backend: String,
+    /// The type of device this represents (e.g., "keyboard", "mouse", "gamepad")
+    pub device_type: String,
+    /// Key remapping from custom keys to evdev codes
+    #[serde(default)]
+    pub remap: HashMap<String, String>,
+    /// When true, only keys defined in the remap table are allowed through (whitelist mode)
+    /// When false (default), undefined keys pass through unchanged
+    #[serde(default)]
+    pub remap_whitelist: bool,
+}
+
+impl Default for DeviceConfig {
+    fn default() -> Self {
+        Self {
+            map_backend: "uinput".to_string(),
+            device_type: "keyboard".to_string(),
+            remap: HashMap::new(),
+            remap_whitelist: false,
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +266,175 @@ mod tests {
         "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         assert!(!config.output.uinput.enabled);
+    }
+
+    #[test]
+    fn test_device_config_basic() {
+        let toml_str = r#"
+            [device."test_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("test_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        assert!(device_config.remap.is_empty());
+    }
+
+    #[test]
+    fn test_device_config_with_remapping() {
+        let toml_str = r#"
+            [device."slider_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+
+            [device."slider_device".remap]
+            "SLIDER_1" = "KEY_A"
+            "SLIDER_2" = "KEY_B"
+            "GAME_1" = "KEY_SPACE"
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("slider_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
+        assert_eq!(device_config.remap.get("SLIDER_2"), Some(&"KEY_B".to_string()));
+        assert_eq!(device_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_devices() {
+        let toml_str = r#"
+            [device."keyboard_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+
+            [device."gamepad_device"]
+            map_backend = "inputplumber"
+            device_type = "gamepad"
+
+            [device."gamepad_device".remap]
+            "BUTTON_A" = "BTN_A"
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        
+        let keyboard_config = config.device.get("keyboard_device").unwrap();
+        assert_eq!(keyboard_config.map_backend, "uinput");
+        assert_eq!(keyboard_config.device_type, "keyboard");
+        
+        let gamepad_config = config.device.get("gamepad_device").unwrap();
+        assert_eq!(gamepad_config.map_backend, "inputplumber");
+        assert_eq!(gamepad_config.device_type, "gamepad");
+        assert_eq!(gamepad_config.remap.get("BUTTON_A"), Some(&"BTN_A".to_string()));
+    }
+
+    #[test]
+    fn test_device_example_config_format() {
+        let toml_str = r#"
+            [input.web]
+            enabled = true
+            port = 8000
+            host = "0.0.0.0"
+
+            [output.uinput]
+            enabled = true
+
+            [device."slider_controller"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+
+            [device."slider_controller".remap]
+            "SLIDER_1" = "KEY_A"
+            "SLIDER_2" = "KEY_S"
+            "SLIDER_3" = "KEY_D"
+
+            [device."custom_gamepad"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+
+            [device."custom_gamepad".remap]
+            "GAME_1" = "KEY_SPACE"
+            "BUTTON_A" = "KEY_Z"
+        "#;
+        
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        
+        // Test slider controller
+        let slider_config = config.device.get("slider_controller").unwrap();
+        assert_eq!(slider_config.map_backend, "uinput");
+        assert_eq!(slider_config.device_type, "keyboard");
+        assert_eq!(slider_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
+        assert_eq!(slider_config.remap.get("SLIDER_2"), Some(&"KEY_S".to_string()));
+        assert_eq!(slider_config.remap.get("SLIDER_3"), Some(&"KEY_D".to_string()));
+        assert_eq!(slider_config.remap_whitelist, false); // Should default to false
+        
+        // Test custom gamepad
+        let gamepad_config = config.device.get("custom_gamepad").unwrap();
+        assert_eq!(gamepad_config.map_backend, "uinput");
+        assert_eq!(gamepad_config.device_type, "keyboard");
+        assert_eq!(gamepad_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
+        assert_eq!(gamepad_config.remap.get("BUTTON_A"), Some(&"KEY_Z".to_string()));
+        assert_eq!(gamepad_config.remap_whitelist, false); // Should default to false
+        
+        // Test other configuration sections remain working
+        assert!(config.input.web.is_some());
+        assert!(config.output.uinput.enabled);
+    }
+
+    #[test]
+    fn test_device_config_with_whitelist_enabled() {
+        let toml_str = r#"
+            [device."whitelist_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+            remap_whitelist = true
+
+            [device."whitelist_device".remap]
+            "SLIDER_1" = "KEY_A"
+            "GAME_1" = "KEY_SPACE"
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("whitelist_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        assert_eq!(device_config.remap_whitelist, true);
+        assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
+        assert_eq!(device_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
+    }
+
+    #[test]
+    fn test_device_config_with_whitelist_enabled_no_remap() {
+        let toml_str = r#"
+            [device."ignore_all_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+            remap_whitelist = true
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("ignore_all_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        assert_eq!(device_config.remap_whitelist, true);
+        assert!(device_config.remap.is_empty());
+    }
+
+    #[test]
+    fn test_device_config_with_whitelist_explicitly_disabled() {
+        let toml_str = r#"
+            [device."passthrough_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+            remap_whitelist = false
+
+            [device."passthrough_device".remap]
+            "SLIDER_1" = "KEY_A"
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("passthrough_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        assert_eq!(device_config.remap_whitelist, false);
+        assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
     }
 }

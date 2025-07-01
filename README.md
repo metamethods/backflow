@@ -32,6 +32,10 @@ Together, they provide a flexible and modular input pipeline for gaming, accessi
 
 - **WebSocket server** for receiving input events
 - **PWA virtual gamepad server** using the WebSocket routing backend
+- **Per-device filtering and key remapping** with configurable transformations
+  - Map custom keycodes to standard evdev codes
+  - Device-specific routing to different output backends
+  - Support for non-standard input devices with custom key definitions
 - **Modular input backends** with support for:
   - Serial devices (e.g. RS232, UART, GPIO)
   - MIDI instruments and controllers
@@ -66,6 +70,47 @@ This will start the Backflow daemon, listening for connections at `ws://localhos
 The web UI can be accessed at `http://localhost:8000/`, which provides a basic [brokenithm-kb](https://github.com/4yn/brokenithm-kb)-like interface for testing the WebSocket router backend, as a demo for the UMIGURI-style layout. More default layouts will be added in the future.
 
 Note that this layout only provides 16 slider zones, unlike a standard CHUNITHM controller which splits this vertically into 32 zones. The game however only uses 16 horizontal zones, so this is sufficient for testing purposes.
+
+### Configuration
+
+Backflow supports per-device filtering and key remapping through a TOML configuration file. Create a `backflow.toml` file in your working directory:
+
+```toml
+# Basic input/output configuration
+[input.web]
+enabled = true
+port = 8000
+host = "0.0.0.0"
+
+[output.uinput]
+enabled = true
+
+# Per-device configuration with custom key remapping
+[device."slider_controller"]
+map_backend = "uinput"
+device_type = "keyboard"
+
+[device."slider_controller".remap]
+"SLIDER_1" = "KEY_A"
+"SLIDER_2" = "KEY_S" 
+"SLIDER_3" = "KEY_D"
+# ... more mappings
+
+[device."custom_gamepad"]
+map_backend = "uinput"
+device_type = "keyboard"
+
+[device."custom_gamepad".remap]
+"GAME_1" = "KEY_SPACE"
+"BUTTON_A" = "KEY_Z"
+```
+
+This allows you to:
+- Map custom keycodes (like `SLIDER_1`, `GAME_1`) to standard evdev codes (`KEY_A`, `KEY_SPACE`)
+- Route different devices to different output backends
+- Configure device-specific transformations
+
+See `backflow.device-example.toml` for a complete example configuration.
 
 ---
 
