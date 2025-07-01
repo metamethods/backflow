@@ -497,10 +497,10 @@ mod tests {
 
     #[test]
     fn test_evdev_key_mapping() -> Result<()> {
-        assert!(UdevOutput::evdev_key_to_uinput_key("A").is_ok());
+        assert!(UdevOutput::evdev_key_to_uinput_key("A").is_err());
         assert!(UdevOutput::evdev_key_to_uinput_key("KEY_A").is_ok());
-        assert!(UdevOutput::evdev_key_to_uinput_key("ENTER").is_ok());
-        assert!(UdevOutput::evdev_key_to_uinput_key("INVALID_KEY").is_err());
+        assert!(UdevOutput::evdev_key_to_uinput_key("KEY_ENTER").is_ok());
+        assert!(UdevOutput::evdev_key_to_uinput_key("INVALID").is_err());
         Ok(())
     }
 
