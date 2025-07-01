@@ -4,7 +4,6 @@
 
 use crossbeam::channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
-pub mod websocket;
 pub mod web;
 
 /// Represents a packet of input events, sent over a network or any other communication channel.

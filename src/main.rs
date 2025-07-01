@@ -1,6 +1,7 @@
+mod config;
+mod feedback;
 mod input;
 mod output;
-mod config;
 use eyre::Result;
 
 use crate::output::OutputBackend;
@@ -46,10 +47,14 @@ async fn main() -> Result<()> {
     );
 
     let input_stream = input::InputEventStream::new();
+    let feedback_stream = feedback::FeedbackEventStream::new();
 
     // Clone the input stream for different tasks
     let ws_input_stream = input_stream.clone();
     let dbus_input_stream = input_stream.clone();
+
+    // Clone the feedback stream for different tasks
+    let ws_feedback_stream = feedback_stream.clone();
 
     // Clone the sender for the test task (commented out)
     // let test_tx = input_stream.tx.clone();
@@ -214,7 +219,8 @@ async fn main() -> Result<()> {
         use input::web::WebServer;
         use std::net::SocketAddr;
         let bind_addr: SocketAddr = "0.0.0.0:8000".parse().expect("Invalid address");
-        let mut ws_backend = WebServer::auto_detect_web_ui(bind_addr, ws_input_stream);
+        let mut ws_backend =
+            WebServer::auto_detect_web_ui(bind_addr, ws_input_stream, ws_feedback_stream);
         if let Err(e) = ws_backend.run().await {
             tracing::error!("WebSocket backend error: {}", e);
         }

@@ -1,22 +1,34 @@
 //! Web server implementation for both WebSocket input handling and web UI serving.
 //! Uses axum framework with tower middleware support.
 
-use crate::input::websocket::ws_handler;
+use crate::feedback::{FeedbackEventPacket, FeedbackEventStream};
 use crate::input::{InputBackend, InputEventPacket, InputEventStream};
 use axum::{
     Router,
     extract::{
         ConnectInfo, State,
-        ws::{WebSocket, WebSocketUpgrade},
+        ws::{Message, WebSocket, WebSocketUpgrade},
     },
+    response::Response,
     routing::get,
 };
 use eyre::{Context, Result};
-use std::{net::SocketAddr, path::PathBuf};
+use futures_util::{sink::SinkExt, stream::StreamExt};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use tokio::sync::RwLock;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
-use tracing::{info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::frontend;
+
+/// Shared state for bidirectional WebSocket communication
+#[derive(Clone)]
+pub struct WebSocketState {
+    pub input_stream: InputEventStream,
+    pub feedback_stream: FeedbackEventStream,
+    pub connected_clients:
+        Arc<RwLock<Vec<tokio::sync::mpsc::UnboundedSender<FeedbackEventPacket>>>>,
+}
 
 /// Web server that handles both WebSocket connections for input events
 /// and serves static files for the web UI.
@@ -25,6 +37,8 @@ pub struct WebServer {
     bind_addr: SocketAddr,
     /// The input event stream to send received events to
     event_stream: InputEventStream,
+    /// The feedback event stream to receive feedback events from
+    feedback_stream: FeedbackEventStream,
     /// Path to the directory containing web UI assets
     web_assets_path: Option<PathBuf>,
 }
@@ -35,10 +49,16 @@ impl WebServer {
     /// # Arguments
     /// * `bind_addr` - The address to bind the server to
     /// * `event_stream` - The input event stream to send received events to
-    pub fn new(bind_addr: SocketAddr, event_stream: InputEventStream) -> Self {
+    /// * `feedback_stream` - The feedback event stream to receive feedback events from
+    pub fn new(
+        bind_addr: SocketAddr,
+        event_stream: InputEventStream,
+        feedback_stream: FeedbackEventStream,
+    ) -> Self {
         Self {
             bind_addr,
             event_stream,
+            feedback_stream,
             web_assets_path: None,
         }
     }
@@ -48,15 +68,18 @@ impl WebServer {
     /// # Arguments
     /// * `bind_addr` - The address to bind the server to
     /// * `event_stream` - The input event stream to send received events to
+    /// * `feedback_stream` - The feedback event stream to receive feedback events from
     /// * `web_assets_path` - Path to the directory containing web UI assets
     pub fn with_web_ui(
         bind_addr: SocketAddr,
         event_stream: InputEventStream,
+        feedback_stream: FeedbackEventStream,
         web_assets_path: PathBuf,
     ) -> Self {
         Self {
             bind_addr,
             event_stream,
+            feedback_stream,
             web_assets_path: Some(web_assets_path),
         }
     }
@@ -66,26 +89,39 @@ impl WebServer {
     /// # Arguments
     /// * `bind_addr` - The address to bind the server to
     /// * `event_stream` - The input event stream to send received events to
+    /// * `feedback_stream` - The feedback event stream to receive feedback events from
     ///
     /// This method checks the `WEB_UI_PATH` environment variable for a configured path,
     /// and falls back to searching for a `web` directory in the current working directory
-    pub fn auto_detect_web_ui(bind_addr: SocketAddr, event_stream: InputEventStream) -> Self {
+    pub fn auto_detect_web_ui(
+        bind_addr: SocketAddr,
+        event_stream: InputEventStream,
+        feedback_stream: FeedbackEventStream,
+    ) -> Self {
         let configured_path = std::env::var("WEB_UI_PATH").ok().map(PathBuf::from);
 
         let web_assets_path = frontend::find_web_ui_dir(configured_path);
         Self {
             bind_addr,
             event_stream,
+            feedback_stream,
             web_assets_path,
         }
     }
 
     /// Build the application router with all routes
     fn build_router(&self) -> Router {
-        // Create the base router with the WebSocket endpoint
+        // Create shared state for bidirectional WebSocket communication
+        let ws_state = WebSocketState {
+            input_stream: self.event_stream.clone(),
+            feedback_stream: self.feedback_stream.clone(),
+            connected_clients: Arc::new(RwLock::new(Vec::new())),
+        };
+
+        // Create the base router with the bidirectional WebSocket endpoint
         let mut router = Router::new()
-            .route("/ws", get(ws_handler))
-            .with_state(self.event_stream.clone());
+            .route("/ws", get(bidirectional_ws_handler))
+            .with_state(ws_state);
 
         // Add static file serving if web UI is enabled
         if let Some(assets_path) = &self.web_assets_path {
@@ -121,9 +157,92 @@ impl WebServer {
 #[async_trait::async_trait]
 impl InputBackend for WebServer {
     async fn run(&mut self) -> Result<()> {
-        let router = self.build_router();
-
         info!("Starting web server on {}", self.bind_addr);
+
+        // Start the feedback broadcast task that uses the same connected_clients from the router state
+        let feedback_stream = self.feedback_stream.clone();
+
+        // Create shared state for bidirectional WebSocket communication
+        let ws_state = WebSocketState {
+            input_stream: self.event_stream.clone(),
+            feedback_stream: self.feedback_stream.clone(),
+            connected_clients: Arc::new(RwLock::new(Vec::new())),
+        };
+
+        // Clone the connected_clients reference for the feedback task
+        let connected_clients_for_broadcast = ws_state.connected_clients.clone();
+
+        // Create the router with the shared state
+        let mut router = Router::new()
+            .route("/ws", get(bidirectional_ws_handler))
+            .with_state(ws_state.clone());
+
+        // Add static file serving if web UI is enabled
+        if let Some(assets_path) = &self.web_assets_path {
+            if frontend::is_valid_web_ui(assets_path) {
+                // Create a service for serving static files with SPA support
+                let serve_dir = tower_http::services::ServeDir::new(assets_path)
+                    .append_index_html_on_directories(true);
+
+                // Add the static file service as a fallback service
+                router = router.fallback_service(serve_dir);
+
+                info!("Web UI serving enabled from {}", assets_path.display());
+            } else {
+                warn!(
+                    "Web UI directory exists but doesn't contain index.html: {}",
+                    assets_path.display()
+                );
+            }
+        } else {
+            info!("Web UI serving disabled (no web assets path configured)");
+        }
+
+        // Add tracing middleware
+        let router = router.layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::default().include_headers(true)),
+        );
+
+        let feedback_task = {
+            let feedback_rx = feedback_stream.rx.clone();
+            let clients = connected_clients_for_broadcast;
+            tokio::spawn(async move {
+                loop {
+                    match feedback_rx.recv() {
+                        Ok(feedback_packet) => {
+                            debug!(
+                                "Broadcasting feedback packet to all clients: device_id={}, events={}",
+                                feedback_packet.device_id,
+                                feedback_packet.events.len()
+                            );
+
+                            // Send to all connected clients
+                            let mut clients_guard = clients.write().await;
+                            let initial_count = clients_guard.len();
+                            clients_guard.retain(|tx| {
+                                !tx.is_closed() && tx.send(feedback_packet.clone()).is_ok()
+                            });
+
+                            let final_count = clients_guard.len();
+                            if final_count > 0 {
+                                info!("Feedback broadcast sent to {} clients", final_count);
+                            }
+                            if initial_count != final_count {
+                                info!(
+                                    "Cleaned up {} disconnected clients",
+                                    initial_count - final_count
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to receive feedback event: {}", e);
+                            break;
+                        }
+                    }
+                }
+            })
+        };
 
         // Create TCP listener
         let listener = tokio::net::TcpListener::bind(self.bind_addr)
@@ -131,7 +250,7 @@ impl InputBackend for WebServer {
             .context("Failed to bind to address")?;
 
         // Run the server with graceful shutdown
-        axum::serve(
+        let server_task = axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
@@ -140,9 +259,17 @@ impl InputBackend for WebServer {
                 .await
                 .expect("Failed to listen for ctrl+c");
             info!("Shutting down web server...");
-        })
-        .await
-        .context("Server error")?;
+        });
+
+        // Run both the server and feedback broadcast task
+        tokio::select! {
+            result = server_task => {
+                result.context("Server error")?;
+            }
+            _ = feedback_task => {
+                warn!("Feedback broadcast task ended unexpectedly");
+            }
+        }
 
         Ok(())
     }
@@ -155,6 +282,10 @@ impl Clone for WebServer {
             event_stream: InputEventStream {
                 tx: self.event_stream.tx.clone(),
                 rx: self.event_stream.rx.clone(),
+            },
+            feedback_stream: FeedbackEventStream {
+                tx: self.feedback_stream.tx.clone(),
+                rx: self.feedback_stream.rx.clone(),
             },
             web_assets_path: self.web_assets_path.clone(),
         }
@@ -200,16 +331,54 @@ mod tests {
         let _deserialized: InputEventPacket =
             serde_json::from_str(&json).expect("Failed to deserialize packet");
     }
+
+    // Test function to demonstrate feedback functionality
+    #[allow(dead_code)]
+    pub async fn test_feedback_broadcast(feedback_stream: &FeedbackEventStream) -> Result<()> {
+        use crate::feedback::{FeedbackEvent, FeedbackEventPacket, HapticEvent, LedEvent};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Create a test feedback packet with LED and haptic events
+        let mut feedback_packet =
+            FeedbackEventPacket::new("test-controller".to_string(), timestamp);
+
+        // Add LED event - turn on red LED
+        feedback_packet.add_event(FeedbackEvent::Led(LedEvent::Set {
+            led_id: 1,
+            on: true,
+            brightness: Some(255),
+            rgb: Some((255, 0, 0)), // Red
+        }));
+
+        // Add haptic event - vibrate motor 0
+        feedback_packet.add_event(FeedbackEvent::Haptic(HapticEvent::Vibrate {
+            motor_id: 0,
+            intensity: 128,
+            duration_ms: 500,
+        }));
+
+        // Send the feedback packet
+        feedback_stream.send(feedback_packet)?;
+        info!("Test feedback packet sent successfully");
+
+        Ok(())
+    }
 }
 
 /// Example usage of the WebServer.
 pub mod examples {
-    /// WebSocket Input Protocol
+    /// WebSocket Bidirectional Protocol
     ///
-    /// The WebSocket endpoint at `/ws` expects JSON messages in the format of [`InputEventPacket`].
-    /// Each message should contain a device ID, timestamp, and list of input events.
+    /// The WebSocket endpoint at `/ws` supports bidirectional communication:
+    /// - **Input (Client → Server)**: Clients send JSON messages in the format of [`InputEventPacket`]
+    /// - **Feedback (Server → Client)**: Server broadcasts JSON messages in the format of [`FeedbackEventPacket`] to all connected clients
     ///
-    /// ## Example JSON Message
+    /// ## Input Message Example (Client sends to Server)
     ///
     /// ```json
     /// {
@@ -234,5 +403,184 @@ pub mod examples {
     ///   ]
     /// }
     /// ```
+    ///
+    /// ## Feedback Message Example (Server broadcasts to Clients)
+    ///
+    /// ```json
+    /// {
+    ///   "device_id": "controller-001",
+    ///   "timestamp": 1672531205000,
+    ///   "events": [
+    ///     {
+    ///       "Led": {
+    ///         "Set": {
+    ///           "led_id": 1,
+    ///           "on": true,
+    ///           "brightness": 200,
+    ///           "rgb": [255, 0, 0]
+    ///         }
+    ///       }
+    ///     },
+    ///     {
+    ///       "Haptic": {
+    ///         "Vibrate": {
+    ///           "motor_id": 0,
+    ///           "intensity": 128,
+    ///           "duration_ms": 500
+    ///         }
+    ///       }
+    ///     }
+    ///   ]
+    /// }
+    /// ```
+    ///
+    /// ## Connection Behavior
+    ///
+    /// - All feedback messages are broadcast to ALL connected WebSocket clients
+    /// - Clients can send input events at any time
+    /// - Server will send feedback events to all clients when available
+    /// - Connection supports standard WebSocket ping/pong for keepalive
     pub fn _doc_example() {}
+}
+
+/// Bidirectional WebSocket handler that processes input events from clients
+/// and broadcasts feedback events to all connected clients.
+pub async fn bidirectional_ws_handler(
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    State(state): State<WebSocketState>,
+) -> Response {
+    info!("New WebSocket connection from {}", addr);
+    ws.on_upgrade(move |socket| handle_socket(socket, addr, state))
+}
+
+/// Handles a single WebSocket connection for bidirectional communication.
+async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketState) {
+    let (sender, mut receiver) = socket.split();
+
+    // Create a channel for this specific client to receive feedback
+    let (feedback_tx, mut feedback_rx) =
+        tokio::sync::mpsc::unbounded_channel::<FeedbackEventPacket>();
+
+    // Add this client to the list of connected clients for feedback broadcasting
+    {
+        let mut clients = state.connected_clients.write().await;
+        clients.push(feedback_tx);
+        info!(
+            "Client {} added to feedback broadcast list. Total clients: {}",
+            addr,
+            clients.len()
+        );
+    }
+
+    // Clone state for the tasks
+    let input_stream = state.input_stream.clone();
+    let connected_clients = state.connected_clients.clone();
+
+    // Wrap sender in Arc<Mutex> to share between tasks
+    let sender = Arc::new(tokio::sync::Mutex::new(sender));
+
+    // Task to handle incoming messages (input events from client)
+    let input_task = {
+        let sender = sender.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = receiver.next().await {
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        debug!("Received message from {}: {}", addr, text);
+
+                        // Try to parse as InputEventPacket
+                        match serde_json::from_str::<InputEventPacket>(&text) {
+                            Ok(packet) => {
+                                debug!(
+                                    "Parsed input packet from {}: device_id={}, events={}",
+                                    addr,
+                                    packet.device_id,
+                                    packet.events.len()
+                                );
+
+                                if let Err(e) = input_stream.send(packet) {
+                                    error!("Failed to send input event to stream: {}", e);
+                                }
+                            }
+                            Err(e) => {
+                                warn!("Failed to parse input packet from {}: {}", addr, e);
+                            }
+                        }
+                    }
+                    Ok(Message::Binary(_)) => {
+                        warn!("Received unexpected binary message from {}", addr);
+                    }
+                    Ok(Message::Ping(data)) => {
+                        debug!("Received ping from {}", addr);
+                        let mut sender_guard = sender.lock().await;
+                        if let Err(e) = sender_guard.send(Message::Pong(data)).await {
+                            warn!("Failed to send pong to {}: {}", addr, e);
+                            break;
+                        }
+                    }
+                    Ok(Message::Pong(_)) => {
+                        debug!("Received pong from {}", addr);
+                    }
+                    Ok(Message::Close(_)) => {
+                        info!("Client {} disconnected", addr);
+                        break;
+                    }
+                    Err(e) => {
+                        warn!("WebSocket error from {}: {}", addr, e);
+                        break;
+                    }
+                }
+            }
+
+            // Clean up this client from the connected clients list
+            let mut clients = connected_clients.write().await;
+            clients.retain(|client| !client.is_closed());
+            info!(
+                "Client {} removed from feedback broadcast list. Remaining clients: {}",
+                addr,
+                clients.len()
+            );
+        })
+    };
+
+    // Task to handle outgoing messages (feedback events to client)
+    let output_task = {
+        let sender = sender.clone();
+        tokio::spawn(async move {
+            while let Some(feedback_packet) = feedback_rx.recv().await {
+                debug!(
+                    "Sending feedback packet to {}: device_id={}, events={}",
+                    addr,
+                    feedback_packet.device_id,
+                    feedback_packet.events.len()
+                );
+
+                match serde_json::to_string(&feedback_packet) {
+                    Ok(json) => {
+                        let mut sender_guard = sender.lock().await;
+                        if let Err(e) = sender_guard.send(Message::Text(json.into())).await {
+                            warn!("Failed to send feedback to {}: {}", addr, e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to serialize feedback packet for {}: {}", addr, e);
+                    }
+                }
+            }
+        })
+    };
+
+    // Wait for either task to complete (connection closed or error)
+    tokio::select! {
+        _ = input_task => {
+            debug!("Input task completed for {}", addr);
+        }
+        _ = output_task => {
+            debug!("Output task completed for {}", addr);
+        }
+    }
+
+    info!("WebSocket connection {} closed", addr);
 }
