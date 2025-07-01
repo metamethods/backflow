@@ -1,0 +1,50 @@
+# Backflow Configuration Example with Per-Device Filtering
+# This file demonstrates the new per-device filtering functionality
+# that allows mapping custom keycodes to actual evdev codes.
+
+[input.web]
+enabled = true
+port = 8000
+host = "0.0.0.0"
+
+[output.uinput]
+enabled = true
+
+# Example device configuration for a slider controller
+[device."slider_controller"]
+map_backend = "uinput"
+device_type = "keyboard"
+
+[device."slider_controller".remap]
+"SLIDER_1" = "KEY_A"
+"SLIDER_2" = "KEY_S" 
+"SLIDER_3" = "KEY_D"
+"SLIDER_4" = "KEY_F"
+"SLIDER_5" = "KEY_G"
+"SLIDER_6" = "KEY_H"
+"SLIDER_7" = "KEY_J"
+"SLIDER_8" = "KEY_K"
+
+# Example device configuration for a gamepad-like device
+[device."custom_gamepad"]
+map_backend = "uinput"
+device_type = "keyboard"
+
+[device."custom_gamepad".remap]
+"GAME_1" = "KEY_SPACE"
+"GAME_2" = "KEY_ENTER"
+"BUTTON_A" = "KEY_Z"
+"BUTTON_B" = "KEY_X"
+"START" = "KEY_ESC"
+"SELECT" = "KEY_TAB"
+
+# Example device with no remapping (standard evdev keys pass through)
+[device."standard_keyboard"]
+map_backend = "uinput"
+device_type = "keyboard"
+# No remap section means standard keys like "KEY_A", "KEY_SPACE" pass through unchanged
+
+[feedback.chuniio]
+socket_path = "/tmp/chuniio_rgb.sock"
+slider_clamp_lights = 16
+slider_id_offset = 0

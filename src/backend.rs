@@ -3,6 +3,7 @@
 //! This module handles taking in a configuration, parsing it, and setting up the backend services.
 
 use crate::config::AppConfig;
+use crate::device_filter::DeviceFilter;
 use crate::feedback::FeedbackEventStream;
 use crate::input::{InputBackend, InputEventStream};
 use crate::output::{OutputBackend, OutputBackendType};
@@ -14,15 +15,19 @@ use tokio::task::JoinHandle;
 pub struct MessageStreams {
     pub input: InputEventStream,
     pub feedback: FeedbackEventStream,
+    /// Transformed input stream (after device filtering)
+    pub transformed_input: InputEventStream,
 }
 
 /// Represents the actual backend service
 pub struct Backend {
     config: AppConfig,
     streams: MessageStreams,
+    device_filter: DeviceFilter,
 
     // Service handles for graceful shutdown
     input_handles: Vec<JoinHandle<()>>,
+    filter_handle: Option<JoinHandle<()>>,
     output_handle: Option<JoinHandle<()>>,
     feedback_handles: Vec<JoinHandle<()>>,
 }
@@ -30,15 +35,19 @@ pub struct Backend {
 impl Backend {
     /// Create a new backend from configuration
     pub fn new(config: AppConfig) -> Self {
+        let device_filter = DeviceFilter::new(&config);
         let streams = MessageStreams {
             input: InputEventStream::new(),
             feedback: FeedbackEventStream::new(),
+            transformed_input: InputEventStream::new(),
         };
 
         Self {
             config,
             streams,
+            device_filter,
             input_handles: Vec::new(),
+            filter_handle: None,
             output_handle: None,
             feedback_handles: Vec::new(),
         }
@@ -47,6 +56,9 @@ impl Backend {
     /// Start all configured backend services
     pub async fn start(&mut self) -> Result<()> {
         tracing::info!("Starting backend services...");
+
+        // Start device filter service
+        self.start_device_filter_service().await?;
 
         // Start input services
         self.start_input_services().await?;
@@ -102,12 +114,47 @@ impl Backend {
         Ok(())
     }
 
+    /// Start device filter service that transforms raw input events
+    async fn start_device_filter_service(&mut self) -> Result<()> {
+        tracing::info!("Starting device filter service");
+
+        let raw_input_stream = self.streams.input.clone();
+        let transformed_output_stream = self.streams.transformed_input.clone();
+        let device_filter = DeviceFilter::new(&self.config);
+
+        let handle = tokio::spawn(async move {
+            loop {
+                // Receive from raw input stream
+                if let Some(packet) = raw_input_stream.receive().await {
+                    match device_filter.transform_packet(packet) {
+                        Ok(transformed_packet) => {
+                            // Send to transformed stream
+                            if let Err(e) = transformed_output_stream.send(transformed_packet).await {
+                                tracing::error!("Failed to send transformed packet: {}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to transform packet: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::debug!("Input stream closed, shutting down device filter");
+                    break;
+                }
+            }
+        });
+
+        self.filter_handle = Some(handle);
+        Ok(())
+    }
+
     /// Start output services based on configuration
     async fn start_output_services(&mut self) -> Result<()> {
         if self.config.output.uinput.enabled {
             tracing::info!("Starting uinput output backend");
 
-            let input_stream = self.streams.input.clone();
+            let input_stream = self.streams.transformed_input.clone();
             let handle = tokio::spawn(async move {
                 let mut output = OutputBackendType::Udev(
                     crate::output::udev::UdevOutput::new(input_stream)
@@ -200,6 +247,12 @@ impl Backend {
             handle.abort();
         }
         tracing::info!("Aborted {} input service tasks", self.input_handles.len());
+
+        // Abort device filter service task
+        if let Some(ref handle) = self.filter_handle {
+            handle.abort();
+            tracing::info!("Aborted device filter service task");
+        }
 
         // Abort output service task
         if let Some(ref handle) = self.output_handle {
