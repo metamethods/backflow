@@ -1,5 +1,6 @@
 mod input;
 mod output;
+mod config;
 use eyre::Result;
 
 use crate::output::OutputBackend;
