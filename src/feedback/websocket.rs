@@ -3,6 +3,33 @@
 //!
 //! This module provides functionality to broadcast feedback events to multiple
 //! WebSocket connections, enabling real-time feedback delivery to devices.
+//!
+//! ## Client Feedback Submission
+//!
+//! Connected WebSocket clients can submit their own feedback packets to be
+//! broadcasted to all clients (including themselves) by sending a JSON message
+//! in the following format:
+//!
+//! ```json
+//! {
+//!   "device_id": "my-custom-device",
+//!   "timestamp": 1672531200000,
+//!   "events": [
+//!     {
+//!       "Led": {
+//!         "Set": {
+//!           "led_id": 42,
+//!           "on": true,
+//!           "brightness": 255,
+//!           "rgb": [255, 0, 0]
+//!         }
+//!       }
+//!     }
+//!   ]
+//! }
+//! ```
+//!
+//! The server will parse this JSON and broadcast it to all connected clients.
 
 use crate::feedback::{FeedbackEventPacket, FeedbackEventStream};
 use axum::extract::ws::{Message, WebSocket};
@@ -53,6 +80,28 @@ impl FeedbackWebSocketManager {
             connections: Arc::new(RwLock::new(HashMap::new())),
             next_connection_id: Arc::new(AtomicU64::new(1)),
         }
+    }
+
+    /// Manually submits a feedback packet to be broadcasted to all connected clients
+    /// This allows external code or client connections to inject feedback packets
+    pub async fn submit_feedback_packet(&self, packet: FeedbackEventPacket) -> Result<()> {
+        let sent_count = self.feedback_tx.send(packet.clone())?;
+        info!(
+            "Manually submitted feedback packet from device '{}' with {} events to {} connections",
+            packet.device_id,
+            packet.events.len(),
+            sent_count
+        );
+        Ok(())
+    }
+
+    /// Creates a new feedback packet with the current timestamp for manual submission
+    pub fn create_feedback_packet(&self, device_id: String) -> FeedbackEventPacket {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        FeedbackEventPacket::new(device_id, timestamp)
     }
 
     /// Broadcasts a feedback event packet to all connected clients
@@ -130,7 +179,8 @@ pub async fn handle_feedback_websocket(
     // Create a channel for sending control messages (like pong) from the incoming task
     let (control_tx, mut control_rx) = tokio::sync::mpsc::unbounded_channel::<Message>();
 
-    // Spawn a task to handle incoming messages (for potential device filter updates)
+    // Spawn a task to handle incoming messages (for device filter updates and manual feedback submission)
+    let manager_clone = manager.clone();
     let incoming_task = tokio::spawn(async move {
         while let Some(msg) = receiver.next().await {
             match msg {
@@ -139,7 +189,34 @@ pub async fn handle_feedback_websocket(
                         "Received message from feedback connection {}: {}",
                         connection_id, text
                     );
-                    // Could handle device filter updates here in the future
+
+                    // Try to parse as a feedback packet for manual submission
+                    match serde_json::from_str::<FeedbackEventPacket>(&text) {
+                        Ok(packet) => {
+                            info!(
+                                "Received manual feedback packet from connection {} for device '{}' with {} events",
+                                connection_id,
+                                packet.device_id,
+                                packet.events.len()
+                            );
+
+                            // Broadcast to all clients (including sender)
+                            if let Err(e) = manager_clone.submit_feedback_packet(packet).await {
+                                error!(
+                                    "Failed to submit manual feedback packet from connection {}: {}",
+                                    connection_id, e
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            // If not a feedback packet, treat as potential command/filter update
+                            debug!(
+                                "Received non-feedback message from connection {}: {}",
+                                connection_id, text
+                            );
+                            // Could handle device filter updates here in the future
+                        }
+                    }
                 }
                 Ok(Message::Close(_)) => {
                     info!("Feedback WebSocket connection {} closed", connection_id);
@@ -310,6 +387,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_manual_feedback_submission() {
+        let manager = FeedbackWebSocketManager::new();
+        let mut rx = manager.create_feedback_receiver();
+
+        // Create a feedback packet manually
+        let mut packet = manager.create_feedback_packet("manual-device".to_string());
+        packet.add_event(FeedbackEvent::Led(LedEvent::Set {
+            led_id: 42,
+            on: true,
+            brightness: Some(128),
+            rgb: Some((255, 0, 0)),
+        }));
+
+        // Submit it manually
+        manager
+            .submit_feedback_packet(packet.clone())
+            .await
+            .unwrap();
+
+        // Receive and verify
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.device_id, "manual-device");
+        assert_eq!(received.events.len(), 1);
+
+        if let FeedbackEvent::Led(LedEvent::Set {
+            led_id,
+            on,
+            brightness,
+            rgb,
+        }) = &received.events[0]
+        {
+            assert_eq!(*led_id, 42);
+            assert_eq!(*on, true);
+            assert_eq!(*brightness, Some(128));
+            assert_eq!(*rgb, Some((255, 0, 0)));
+        } else {
+            panic!("Expected LED set event");
+        }
+    }
+
+    #[tokio::test]
     async fn test_feedback_broadcast() {
         let manager = FeedbackWebSocketManager::new();
         let mut rx = manager.create_feedback_receiver();
@@ -334,5 +452,56 @@ mod tests {
         let received = rx.recv().await.unwrap();
         assert_eq!(received.device_id, packet.device_id);
         assert_eq!(received.events.len(), packet.events.len());
+    }
+
+    #[tokio::test]
+    async fn test_client_feedback_broadcasting_to_all_including_sender() {
+        let manager = FeedbackWebSocketManager::new();
+
+        // Create multiple receivers to simulate multiple clients
+        let mut rx1 = manager.create_feedback_receiver();
+        let mut rx2 = manager.create_feedback_receiver();
+        let mut rx3 = manager.create_feedback_receiver();
+
+        // Create a feedback packet as if sent by a client
+        let mut packet = manager.create_feedback_packet("client-device".to_string());
+        packet.add_event(FeedbackEvent::Led(LedEvent::Set {
+            led_id: 99,
+            on: false,
+            brightness: Some(64),
+            rgb: Some((0, 255, 0)),
+        }));
+
+        // Submit it as if received from a WebSocket client
+        manager
+            .submit_feedback_packet(packet.clone())
+            .await
+            .unwrap();
+
+        // All receivers should get the same packet (including the "sender")
+        let received1 = rx1.recv().await.unwrap();
+        let received2 = rx2.recv().await.unwrap();
+        let received3 = rx3.recv().await.unwrap();
+
+        // Verify all clients received the same packet
+        for received in [&received1, &received2, &received3] {
+            assert_eq!(received.device_id, "client-device");
+            assert_eq!(received.events.len(), 1);
+
+            if let FeedbackEvent::Led(LedEvent::Set {
+                led_id,
+                on,
+                brightness,
+                rgb,
+            }) = &received.events[0]
+            {
+                assert_eq!(*led_id, 99);
+                assert_eq!(*on, false);
+                assert_eq!(*brightness, Some(64));
+                assert_eq!(*rgb, Some((0, 255, 0)));
+            } else {
+                panic!("Expected LED set event");
+            }
+        }
     }
 }

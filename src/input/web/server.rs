@@ -295,6 +295,7 @@ impl Clone for WebServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feedback::{FeedbackEvent, LedEvent};
     use crate::input::{InputEvent, KeyboardEvent, PointerEvent};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -368,6 +369,62 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn test_unified_websocket_state() {
+        let input_stream = InputEventStream::new();
+        let feedback_stream = FeedbackEventStream::new();
+
+        let state = WebSocketState {
+            input_stream: input_stream.clone(),
+            feedback_stream: feedback_stream.clone(),
+            connected_clients: Arc::new(RwLock::new(Vec::new())),
+        };
+
+        // Test that we can create channels for both types
+        let (feedback_tx, _feedback_rx) =
+            tokio::sync::mpsc::unbounded_channel::<FeedbackEventPacket>();
+
+        // Add client to broadcast list
+        {
+            let mut clients = state.connected_clients.write().await;
+            clients.push(feedback_tx);
+            assert_eq!(clients.len(), 1);
+        }
+
+        // Test input packet creation
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let mut input_packet = InputEventPacket::new("test-device".to_string(), timestamp);
+        input_packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "a".to_string(),
+        }));
+
+        // Test feedback packet creation
+        let mut feedback_packet = FeedbackEventPacket::new("test-device".to_string(), timestamp);
+        feedback_packet.add_event(FeedbackEvent::Led(LedEvent::Set {
+            led_id: 1,
+            on: true,
+            brightness: Some(255),
+            rgb: Some((255, 0, 0)),
+        }));
+
+        // Verify serialization works for both packet types
+        let input_json = serde_json::to_string(&input_packet).unwrap();
+        let feedback_json = serde_json::to_string(&feedback_packet).unwrap();
+
+        // Verify we can parse them back
+        let parsed_input: InputEventPacket = serde_json::from_str(&input_json).unwrap();
+        let parsed_feedback: FeedbackEventPacket = serde_json::from_str(&feedback_json).unwrap();
+
+        assert_eq!(parsed_input.device_id, "test-device");
+        assert_eq!(parsed_feedback.device_id, "test-device");
+        assert_eq!(parsed_input.events.len(), 1);
+        assert_eq!(parsed_feedback.events.len(), 1);
+    }
 }
 
 /// Example usage of the WebServer.
@@ -375,10 +432,13 @@ pub mod examples {
     /// WebSocket Bidirectional Protocol
     ///
     /// The WebSocket endpoint at `/ws` supports bidirectional communication:
-    /// - **Input (Client → Server)**: Clients send JSON messages in the format of [`InputEventPacket`]
+    /// - **Input (Client → Server)**: Clients send JSON messages in the format of [`InputEventPacket`] for user input processing
+    /// - **Feedback (Client → All Clients)**: Clients can send JSON messages in the format of [`FeedbackEventPacket`] to be broadcasted to all connected clients
     /// - **Feedback (Server → Client)**: Server broadcasts JSON messages in the format of [`FeedbackEventPacket`] to all connected clients
     ///
     /// ## Input Message Example (Client sends to Server)
+    ///
+    /// Send user input events like keyboard presses, mouse movements, etc:
     ///
     /// ```json
     /// {
@@ -404,7 +464,32 @@ pub mod examples {
     /// }
     /// ```
     ///
+    /// ## Client Feedback Broadcast Example (Client broadcasts to All Clients)
+    ///
+    /// Send feedback events to be announced to all connected clients:
+    ///
+    /// ```json
+    /// {
+    ///   "device_id": "my-custom-device",
+    ///   "timestamp": 1672531200000,
+    ///   "events": [
+    ///     {
+    ///       "Led": {
+    ///         "Set": {
+    ///           "led_id": 42,
+    ///           "on": true,
+    ///           "brightness": 255,
+    ///           "rgb": [255, 0, 0]
+    ///         }
+    ///       }
+    ///     }
+    ///   ]
+    /// }
+    /// ```
+    ///
     /// ## Feedback Message Example (Server broadcasts to Clients)
+    ///
+    /// Server-generated feedback events are automatically sent to all clients:
     ///
     /// ```json
     /// {
@@ -489,23 +574,49 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
                     Ok(Message::Text(text)) => {
                         debug!("Received message from {}: {}", addr, text);
 
-                        // Try to parse as InputEventPacket
-                        match serde_json::from_str::<InputEventPacket>(&text) {
-                            Ok(packet) => {
-                                debug!(
-                                    "Parsed input packet from {}: device_id={}, events={}",
-                                    addr,
-                                    packet.device_id,
-                                    packet.events.len()
-                                );
+                        // Try to parse as InputEventPacket first
+                        if let Ok(packet) = serde_json::from_str::<InputEventPacket>(&text) {
+                            debug!(
+                                "Parsed input packet from {}: device_id={}, events={}",
+                                addr,
+                                packet.device_id,
+                                packet.events.len()
+                            );
 
-                                if let Err(e) = input_stream.send(packet) {
-                                    error!("Failed to send input event to stream: {}", e);
+                            if let Err(e) = input_stream.send(packet) {
+                                error!("Failed to send input event to stream: {}", e);
+                            }
+                        }
+                        // If not an input packet, try to parse as FeedbackEventPacket for broadcasting
+                        else if let Ok(feedback_packet) =
+                            serde_json::from_str::<FeedbackEventPacket>(&text)
+                        {
+                            info!(
+                                "Received feedback packet from {} for broadcasting: device_id={}, events={}",
+                                addr,
+                                feedback_packet.device_id,
+                                feedback_packet.events.len()
+                            );
+
+                            // Broadcast to all connected clients (including sender)
+                            let clients = connected_clients.read().await;
+                            let mut sent_count = 0;
+                            for client in clients.iter() {
+                                if !client.is_closed()
+                                    && client.send(feedback_packet.clone()).is_ok()
+                                {
+                                    sent_count += 1;
                                 }
                             }
-                            Err(e) => {
-                                warn!("Failed to parse input packet from {}: {}", addr, e);
-                            }
+                            info!(
+                                "Broadcasted feedback packet from {} to {} clients",
+                                addr, sent_count
+                            );
+                        } else {
+                            warn!(
+                                "Failed to parse message from {} as either input or feedback packet",
+                                addr
+                            );
                         }
                     }
                     Ok(Message::Binary(_)) => {
