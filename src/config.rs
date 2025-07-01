@@ -19,6 +19,33 @@ impl AppConfig {
     pub fn from_toml_str(toml_str: &str) -> Result<Self, toml::de::Error> {
         toml::from_str(toml_str)
     }
+
+    /// Load configuration from a TOML file
+    pub fn from_file<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let contents = std::fs::read_to_string(path)?;
+        let config: AppConfig = Self::from_toml_str(&contents)
+            .map_err(|e| format!("Failed to parse config file: {}", e))?;
+        Ok(config)
+    }
+
+    /// Load configuration with fallback to defaults
+    pub fn load_or_default() -> Self {
+        // Try to load from standard locations
+        // for now, backflow.toml is the only config file in the current directory
+        let config_paths = [std::path::PathBuf::from("backflow.toml")];
+
+        for path in &config_paths {
+            if let Ok(config) = Self::from_file(path) {
+                tracing::info!("Loaded configuration from: {}", path.display());
+                return config;
+            }
+        }
+
+        tracing::info!("No configuration file found, using defaults");
+        Self::default()
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
