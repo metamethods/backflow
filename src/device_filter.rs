@@ -145,7 +145,7 @@ impl DeviceFilter {
     }
 
     /// Get the target backend for a specific device
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn get_device_backend(&self, device_id: &str) -> Option<&str> {
         self.device_configs
             .get(device_id)
@@ -153,7 +153,7 @@ impl DeviceFilter {
     }
 
     /// Get the device type for a specific device
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn get_device_type(&self, device_id: &str) -> Option<&str> {
         self.device_configs
             .get(device_id)
@@ -161,7 +161,7 @@ impl DeviceFilter {
     }
 
     /// Check if a device has any configuration
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn has_device_config(&self, device_id: &str) -> bool {
         self.device_configs.contains_key(device_id)
     }

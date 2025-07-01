@@ -52,46 +52,6 @@ pub struct WebTemplateResponse {
 }
 
 impl WebServer {
-    /// Creates a new web server for WebSocket input handling only.
-    ///
-    /// # Arguments
-    /// * `bind_addr` - The address to bind the server to
-    /// * `event_stream` - The input event stream to send received events to
-    /// * `feedback_stream` - The feedback event stream to receive feedback events from
-    pub fn new(
-        bind_addr: SocketAddr,
-        event_stream: InputEventStream,
-        feedback_stream: FeedbackEventStream,
-    ) -> Self {
-        Self {
-            bind_addr,
-            event_stream,
-            feedback_stream,
-            web_assets_path: None,
-        }
-    }
-
-    /// Creates a new web server with web UI hosting.
-    ///
-    /// # Arguments
-    /// * `bind_addr` - The address to bind the server to
-    /// * `event_stream` - The input event stream to send received events to
-    /// * `feedback_stream` - The feedback event stream to receive feedback events from
-    /// * `web_assets_path` - Path to the directory containing web UI assets
-    pub fn with_web_ui(
-        bind_addr: SocketAddr,
-        event_stream: InputEventStream,
-        feedback_stream: FeedbackEventStream,
-        web_assets_path: PathBuf,
-    ) -> Self {
-        Self {
-            bind_addr,
-            event_stream,
-            feedback_stream,
-            web_assets_path: Some(web_assets_path),
-        }
-    }
-
     /// Automatically detect and use web UI if available.
     ///
     /// # Arguments
@@ -170,68 +130,14 @@ impl WebServer {
         }
     }
 
-    /// Build the application router with all routes
-    fn build_router(&self) -> Router {
+    /// Build the application router with all routes and return both the router and WebSocket state
+    fn build_router(&self) -> (Router, WebSocketState) {
         // Create shared state for bidirectional WebSocket communication
         let ws_state = WebSocketState {
             input_stream: self.event_stream.clone(),
             feedback_stream: self.feedback_stream.clone(),
             connected_clients: Arc::new(RwLock::new(Vec::new())),
         };
-
-        // Create the base router with the bidirectional WebSocket endpoint
-        let mut router = Router::new()
-            .route("/ws", get(bidirectional_ws_handler))
-            .with_state(ws_state);
-
-        // Add static file serving if web UI is enabled
-        if let Some(assets_path) = &self.web_assets_path {
-            if frontend::is_valid_web_ui(assets_path) {
-                // Create a service for serving static files with SPA support
-                let serve_dir = tower_http::services::ServeDir::new(assets_path)
-                    .append_index_html_on_directories(true);
-
-                // Add the static file service as a fallback service
-                router = router.fallback_service(serve_dir);
-
-                info!("Web UI serving enabled from {}", assets_path.display());
-            } else {
-                warn!(
-                    "Web UI directory exists but doesn't contain index.html: {}",
-                    assets_path.display()
-                );
-            }
-        } else {
-            info!("Web UI serving disabled (no web assets path configured)");
-        }
-
-        // Add tracing middleware
-        router = router.layer(
-            TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::default().include_headers(true)),
-        );
-
-        router
-    }
-}
-
-#[async_trait::async_trait]
-impl InputBackend for WebServer {
-    async fn run(&mut self) -> Result<()> {
-        info!("Starting web server on {}", self.bind_addr);
-
-        // Start the feedback broadcast task that uses the same connected_clients from the router state
-        let feedback_stream = self.feedback_stream.clone();
-
-        // Create shared state for bidirectional WebSocket communication
-        let ws_state = WebSocketState {
-            input_stream: self.event_stream.clone(),
-            feedback_stream: self.feedback_stream.clone(),
-            connected_clients: Arc::new(RwLock::new(Vec::new())),
-        };
-
-        // Clone the connected_clients reference for the feedback task
-        let connected_clients_for_broadcast = ws_state.connected_clients.clone();
 
         // Create the WebSocket router with WebSocket state
         let ws_router = Router::new()
@@ -273,6 +179,22 @@ impl InputBackend for WebServer {
             TraceLayer::new_for_http()
                 .make_span_with(DefaultMakeSpan::default().include_headers(true)),
         );
+
+        (router, ws_state)
+    }
+}
+
+#[async_trait::async_trait]
+impl InputBackend for WebServer {
+    async fn run(&mut self) -> Result<()> {
+        info!("Starting web server on {}", self.bind_addr);
+
+        // Build the router and get the WebSocket state
+        let (router, ws_state) = self.build_router();
+
+        // Clone the connected_clients reference for the feedback task
+        let connected_clients_for_broadcast = ws_state.connected_clients.clone();
+        let feedback_stream = self.feedback_stream.clone();
 
         let feedback_task = {
             let feedback_stream = feedback_stream.clone();
@@ -437,7 +359,7 @@ mod tests {
     }
 
     // Test function to demonstrate feedback functionality
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub async fn test_feedback_broadcast(feedback_stream: &FeedbackEventStream) -> Result<()> {
         use crate::feedback::{FeedbackEvent, FeedbackEventPacket, HapticEvent, LedEvent};
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -561,12 +483,13 @@ mod tests {
         // Create a web server with the temp directory
         let input_stream = InputEventStream::new();
         let feedback_stream = FeedbackEventStream::new();
-        let server = WebServer::with_web_ui(
+        let mut server = WebServer::auto_detect_web_ui(
             "127.0.0.1:0".parse().unwrap(),
             input_stream,
             feedback_stream,
-            web_dir.to_path_buf(),
         );
+        // Manually set the web assets path for testing
+        server.web_assets_path = Some(web_dir.to_path_buf());
 
         // Test the list_custom_layouts method
         let layouts = server.list_custom_layouts();

@@ -36,14 +36,11 @@ use crate::config::ChuniIoRgbConfig;
 use crate::feedback::FeedbackEvent;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
-
 #[allow(dead_code)]
 const LED_PACKET_FRAMING: u8 = 0xE0;
-#[allow(dead_code)]
 const LED_PACKET_ESCAPE: u8 = 0xD0;
 #[allow(dead_code)]
 const LED_NUM_MAX: usize = 66;
-#[allow(dead_code)]
 const LED_BOARDS_TOTAL: usize = 3;
 #[allow(dead_code)]
 const LED_OUTPUT_HEADER_SIZE: usize = 2;
@@ -53,7 +50,6 @@ const LED_OUTPUT_DATA_SIZE_MAX: usize = LED_NUM_MAX * 3 * 2; // max if every byt
 const LED_OUTPUT_TOTAL_SIZE_MAX: usize = LED_OUTPUT_HEADER_SIZE + LED_OUTPUT_DATA_SIZE_MAX;
 
 // Data lengths for each LED board (in bytes, RGB = 3 bytes per LED)
-#[allow(dead_code)]
 const CHUNI_LED_BOARD_DATA_LENS: [usize; LED_BOARDS_TOTAL] = [
     53 * 3, // Board 0: Billboard LEDs
     63 * 3, // Board 1: Billboard LEDs
@@ -113,7 +109,6 @@ impl std::fmt::Display for DecodeError {
 impl std::error::Error for DecodeError {}
 
 /// CHUNITHM LED data packet structure
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ChuniLedDataPacket {
     /// Board identifier (0-1: billboard, 2: slider)
@@ -324,7 +319,6 @@ pub struct ChuniLedParser {
     // TODO: Add internal state for handling partial packets, escape sequences, etc.
 }
 
-#[allow(dead_code)]
 impl ChuniLedParser {
     /// Create a new parser instance
     pub fn new() -> Self {
@@ -385,6 +379,15 @@ impl Default for ChuniLedParser {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Create and run a CHUNITHM RGB lightsync service
+pub async fn run_chuniio_service(
+    config: ChuniIoRgbConfig,
+    feedback_stream: crate::feedback::FeedbackEventStream,
+) -> eyre::Result<()> {
+    let mut service = ChuniRgbService::new(config, feedback_stream);
+    service.run().await
 }
 
 #[cfg(test)]
@@ -599,9 +602,18 @@ impl ChuniRgbService {
         );
 
         let (device_id, events) = match packet.board {
-            0 => ("chunithm_billboard_left".to_string(), self.generate_billboard_feedback_events(packet, 0)?),
-            1 => ("chunithm_billboard_right".to_string(), self.generate_billboard_feedback_events(packet, 1)?),
-            2 => ("chunithm_slider".to_string(), self.generate_slider_feedback_events(packet)?),
+            0 => (
+                "chunithm_billboard_left".to_string(),
+                self.generate_billboard_feedback_events(packet, 0)?,
+            ),
+            1 => (
+                "chunithm_billboard_right".to_string(),
+                self.generate_billboard_feedback_events(packet, 1)?,
+            ),
+            2 => (
+                "chunithm_slider".to_string(),
+                self.generate_slider_feedback_events(packet)?,
+            ),
             _ => {
                 tracing::warn!("Unknown board ID {}, skipping packet", packet.board);
                 return Ok(());
@@ -699,8 +711,8 @@ impl ChuniRgbService {
 
         // Generate LED events with board-specific ID offset
         let id_offset = match board_id {
-            0 => 0,    // Billboard left starts at LED ID 0
-            1 => 100,  // Billboard right starts at LED ID 100
+            0 => 0,   // Billboard left starts at LED ID 0
+            1 => 100, // Billboard right starts at LED ID 100
             _ => return Err(eyre::eyre!("Invalid billboard board ID: {}", board_id)),
         };
 
@@ -725,13 +737,4 @@ impl ChuniRgbService {
 
         Ok(events)
     }
-}
-
-/// Create and run a CHUNITHM RGB feedback service
-pub async fn run_chuniio_service(
-    config: ChuniIoRgbConfig,
-    feedback_stream: crate::feedback::FeedbackEventStream,
-) -> eyre::Result<()> {
-    let mut service = ChuniRgbService::new(config, feedback_stream);
-    service.run().await
 }

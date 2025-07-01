@@ -9,6 +9,7 @@ pub struct DummyOutput {
 
 impl DummyOutput {
     /// Creates a new `DummyOutput` with the given input event stream.
+    #[cfg(test)] // Part of public API, may be used in tests or alternative configurations
     pub fn new(stream: InputEventStream) -> Self {
         Self { stream }
     }

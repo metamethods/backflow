@@ -2,9 +2,9 @@
 //!
 //! This module provides utilities for serving static files for the web UI.
 
-use axum::Router;
+// use axum::Router;
 use std::path::{Path, PathBuf};
-use tower_http::services::fs::ServeDir;
+// use tower_http::services::fs::ServeDir;
 use tracing::{info, warn};
 
 /// Attempts to find a valid web UI directory, checking common locations.
@@ -57,18 +57,18 @@ pub fn find_web_ui_dir(configured_path: Option<PathBuf>) -> Option<PathBuf> {
     None
 }
 
-/// Builds a router for serving the web UI if the directory exists.
-pub fn build_frontend_router(web_dir: &Path) -> Router {
-    info!(
-        "Setting up frontend file serving from {}",
-        web_dir.display()
-    );
+// /// Builds a router for serving the web UI if the directory exists.
+// pub fn build_frontend_router(web_dir: &Path) -> Router {
+//     info!(
+//         "Setting up frontend file serving from {}",
+//         web_dir.display()
+//     );
 
-    // Create a service for serving static files with SPA support
-    let serve_dir = ServeDir::new(web_dir).append_index_html_on_directories(true);
+//     // Create a service for serving static files with SPA support
+//     let serve_dir = ServeDir::new(web_dir).append_index_html_on_directories(true);
 
-    Router::new().fallback_service(serve_dir)
-}
+//     Router::new().fallback_service(serve_dir)
+// }
 
 /// Checks if an HTML file exists in the web directory to confirm it's a valid web UI.
 pub fn is_valid_web_ui(web_dir: &Path) -> bool {

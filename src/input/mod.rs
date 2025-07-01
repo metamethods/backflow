@@ -87,7 +87,7 @@ pub enum JoystickEvent {
     /// A joystick axis movement event.
     AxisMovement { stick: u8, x: i16, y: i16 },
 }
-
+#[cfg(test)]
 impl InputEventPacket {
     /// Creates a new `InputEventPacket` with the given device ID and timestamp.
     pub fn new(device_id: String, timestamp: u64) -> Self {

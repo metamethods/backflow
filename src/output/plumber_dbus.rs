@@ -31,6 +31,7 @@ pub struct PlumberOutputBackend {
 
 impl PlumberOutputBackend {
     /// Creates a new `PlumberOutputBackend` with the given D-Bus connection.
+    #[cfg(test)] // Part of public API, may be used when D-Bus output is enabled
     pub async fn new() -> Result<Self> {
         let connection = zbus::Connection::system().await?;
         tracing::info!("Connected to D-Bus system bus");
@@ -157,6 +158,7 @@ pub struct DbusPlumberOutput {
 
 impl DbusPlumberOutput {
     /// Creates a new `DbusPlumberOutput` with the given input event stream.
+    #[cfg(test)] // Part of public API, may be used when D-Bus output is enabled
     pub async fn new(stream: InputEventStream) -> Self {
         Self {
             stream,

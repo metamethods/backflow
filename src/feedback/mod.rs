@@ -162,7 +162,7 @@ pub enum HapticEvent {
 // these are used in tests
 impl FeedbackEventPacket {
     /// Creates a new `FeedbackEventPacket` with the given device ID and timestamp.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn new(device_id: String, timestamp: u64) -> Self {
         Self {
             device_id,
@@ -172,7 +172,7 @@ impl FeedbackEventPacket {
     }
 
     /// Adds an event to the packet.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn add_event(&mut self, event: FeedbackEvent) {
         self.events.push(event);
     }
