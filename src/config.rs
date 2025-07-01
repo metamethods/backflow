@@ -83,7 +83,17 @@ pub struct OutputConfig {
 
 #[derive(Debug, Deserialize, Serialize, Default)]
 pub struct UnixDomainSocketConfig {
+    #[serde(default = "default_unix_socket_path")]
     pub path: PathBuf,
+}
+fn default_unix_socket_path() -> PathBuf {
+    use std::env;
+    // Check environment variable first
+    if let Ok(env_path) = env::var("BACKFLOW_UNIX_SOCKET") {
+        return PathBuf::from(env_path);
+    }
+    let uid = nix::unistd::Uid::effective().as_raw();
+    PathBuf::from(format!("/run/user/{}/backflow", uid))
 }
 
 // set web.enabled = false in [input.web] to explicitly disable the web backend
@@ -298,9 +308,18 @@ mod tests {
         let device_config = config.device.get("slider_device").unwrap();
         assert_eq!(device_config.map_backend, "uinput");
         assert_eq!(device_config.device_type, "keyboard");
-        assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
-        assert_eq!(device_config.remap.get("SLIDER_2"), Some(&"KEY_B".to_string()));
-        assert_eq!(device_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
+        assert_eq!(
+            device_config.remap.get("SLIDER_1"),
+            Some(&"KEY_A".to_string())
+        );
+        assert_eq!(
+            device_config.remap.get("SLIDER_2"),
+            Some(&"KEY_B".to_string())
+        );
+        assert_eq!(
+            device_config.remap.get("GAME_1"),
+            Some(&"KEY_SPACE".to_string())
+        );
     }
 
     #[test]
@@ -318,15 +337,18 @@ mod tests {
             "BUTTON_A" = "BTN_A"
         "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        
+
         let keyboard_config = config.device.get("keyboard_device").unwrap();
         assert_eq!(keyboard_config.map_backend, "uinput");
         assert_eq!(keyboard_config.device_type, "keyboard");
-        
+
         let gamepad_config = config.device.get("gamepad_device").unwrap();
         assert_eq!(gamepad_config.map_backend, "inputplumber");
         assert_eq!(gamepad_config.device_type, "gamepad");
-        assert_eq!(gamepad_config.remap.get("BUTTON_A"), Some(&"BTN_A".to_string()));
+        assert_eq!(
+            gamepad_config.remap.get("BUTTON_A"),
+            Some(&"BTN_A".to_string())
+        );
     }
 
     #[test]
@@ -357,26 +379,41 @@ mod tests {
             "GAME_1" = "KEY_SPACE"
             "BUTTON_A" = "KEY_Z"
         "#;
-        
+
         let config: AppConfig = toml::from_str(toml_str).unwrap();
-        
+
         // Test slider controller
         let slider_config = config.device.get("slider_controller").unwrap();
         assert_eq!(slider_config.map_backend, "uinput");
         assert_eq!(slider_config.device_type, "keyboard");
-        assert_eq!(slider_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
-        assert_eq!(slider_config.remap.get("SLIDER_2"), Some(&"KEY_S".to_string()));
-        assert_eq!(slider_config.remap.get("SLIDER_3"), Some(&"KEY_D".to_string()));
+        assert_eq!(
+            slider_config.remap.get("SLIDER_1"),
+            Some(&"KEY_A".to_string())
+        );
+        assert_eq!(
+            slider_config.remap.get("SLIDER_2"),
+            Some(&"KEY_S".to_string())
+        );
+        assert_eq!(
+            slider_config.remap.get("SLIDER_3"),
+            Some(&"KEY_D".to_string())
+        );
         assert!(!slider_config.remap_whitelist); // Should default to false
-        
+
         // Test custom gamepad
         let gamepad_config = config.device.get("custom_gamepad").unwrap();
         assert_eq!(gamepad_config.map_backend, "uinput");
         assert_eq!(gamepad_config.device_type, "keyboard");
-        assert_eq!(gamepad_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
-        assert_eq!(gamepad_config.remap.get("BUTTON_A"), Some(&"KEY_Z".to_string()));
+        assert_eq!(
+            gamepad_config.remap.get("GAME_1"),
+            Some(&"KEY_SPACE".to_string())
+        );
+        assert_eq!(
+            gamepad_config.remap.get("BUTTON_A"),
+            Some(&"KEY_Z".to_string())
+        );
         assert!(!gamepad_config.remap_whitelist); // Should default to false
-        
+
         // Test other configuration sections remain working
         assert!(config.input.web.is_some());
         assert!(config.output.uinput.enabled);
@@ -399,8 +436,14 @@ mod tests {
         assert_eq!(device_config.map_backend, "uinput");
         assert_eq!(device_config.device_type, "keyboard");
         assert!(device_config.remap_whitelist);
-        assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
-        assert_eq!(device_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
+        assert_eq!(
+            device_config.remap.get("SLIDER_1"),
+            Some(&"KEY_A".to_string())
+        );
+        assert_eq!(
+            device_config.remap.get("GAME_1"),
+            Some(&"KEY_SPACE".to_string())
+        );
     }
 
     #[test]
@@ -435,6 +478,9 @@ mod tests {
         assert_eq!(device_config.map_backend, "uinput");
         assert_eq!(device_config.device_type, "keyboard");
         assert!(!device_config.remap_whitelist);
-        assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
+        assert_eq!(
+            device_config.remap.get("SLIDER_1"),
+            Some(&"KEY_A".to_string())
+        );
     }
 }

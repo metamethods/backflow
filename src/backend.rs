@@ -107,8 +107,22 @@ impl Backend {
         }
 
         // TODO: Add unix domain socket input backend
-        if let Some(_unix_config) = &self.config.input.unix {
-            tracing::warn!("Unix domain socket input backend not yet implemented");
+        if let Some(unix_config) = &self.config.input.unix {
+            tracing::info!(
+                "Starting unix socket input backend at {}",
+                unix_config.path.display()
+            );
+            let input_stream = self.streams.input.clone();
+            let feedback_stream = self.streams.feedback.clone();
+            let socket_path = unix_config.path.clone();
+            let handle = tokio::spawn(async move {
+                use crate::input::unix_socket::UnixSocketServer;
+                let mut unix_backend = UnixSocketServer::new(socket_path, input_stream, feedback_stream);
+                if let Err(e) = unix_backend.run().await {
+                    tracing::error!("Unix socket backend error: {}", e);
+                }
+            });
+            self.input_handles.push(handle);
         }
 
         Ok(())

@@ -359,41 +359,41 @@ mod tests {
     }
 
     // Test function to demonstrate feedback functionality
-    #[cfg(test)]
-    pub async fn test_feedback_broadcast(feedback_stream: &FeedbackEventStream) -> Result<()> {
-        use crate::feedback::{FeedbackEvent, FeedbackEventPacket, HapticEvent, LedEvent};
-        use std::time::{SystemTime, UNIX_EPOCH};
+    // #[cfg(test)]
+    // pub async fn test_feedback_broadcast(feedback_stream: &FeedbackEventStream) -> Result<()> {
+    //     use crate::feedback::{FeedbackEvent, FeedbackEventPacket, HapticEvent, LedEvent};
+    //     use std::time::{SystemTime, UNIX_EPOCH};
 
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+    //     let timestamp = SystemTime::now()
+    //         .duration_since(UNIX_EPOCH)
+    //         .unwrap()
+    //         .as_millis() as u64;
 
-        // Create a test feedback packet with LED and haptic events
-        let mut feedback_packet =
-            FeedbackEventPacket::new("test-controller".to_string(), timestamp);
+    //     // Create a test feedback packet with LED and haptic events
+    //     let mut feedback_packet =
+    //         FeedbackEventPacket::new("test-controller".to_string(), timestamp);
 
-        // Add LED event - turn on red LED
-        feedback_packet.add_event(FeedbackEvent::Led(LedEvent::Set {
-            led_id: 1,
-            on: true,
-            brightness: Some(255),
-            rgb: Some((255, 0, 0)), // Red
-        }));
+    //     // Add LED event - turn on red LED
+    //     feedback_packet.add_event(FeedbackEvent::Led(LedEvent::Set {
+    //         led_id: 1,
+    //         on: true,
+    //         brightness: Some(255),
+    //         rgb: Some((255, 0, 0)), // Red
+    //     }));
 
-        // Add haptic event - vibrate motor 0
-        feedback_packet.add_event(FeedbackEvent::Haptic(HapticEvent::Vibrate {
-            motor_id: 0,
-            intensity: 128,
-            duration_ms: 500,
-        }));
+    //     // Add haptic event - vibrate motor 0
+    //     feedback_packet.add_event(FeedbackEvent::Haptic(HapticEvent::Vibrate {
+    //         motor_id: 0,
+    //         intensity: 128,
+    //         duration_ms: 500,
+    //     }));
 
-        // Send the feedback packet
-        feedback_stream.send(feedback_packet).await?;
-        info!("Test feedback packet sent successfully");
+    //     // Send the feedback packet
+    //     feedback_stream.send(feedback_packet).await?;
+    //     info!("Test feedback packet sent successfully");
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
     #[tokio::test]
     async fn test_unified_websocket_state() {

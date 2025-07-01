@@ -8,7 +8,7 @@ pub mod generators;
 
 /// Represents a packet of feedback events, sent over a network or any other communication channel.
 /// (i.e WebSocket, Unix Domain Socket, etc.)
-///W
+///
 /// The packet contains a device identifier, timestamp and a list of feedback events to be processed.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackEventPacket {
