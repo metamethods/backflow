@@ -1,16 +1,16 @@
 //! Dummy output backend for testing and demonstration purposes.
-use crate::input::{InputEventPacket, InputEventStream};
+use crate::input::InputEventStream;
 use crate::output::OutputBackend;
 use eyre::Result;
 
 pub struct DummyOutput {
-    stream: crossbeam::channel::Receiver<InputEventPacket>,
+    stream: InputEventStream,
 }
 
 impl DummyOutput {
     /// Creates a new `DummyOutput` with the given input event stream.
     pub fn new(stream: InputEventStream) -> Self {
-        Self { stream: stream.rx }
+        Self { stream }
     }
 }
 
@@ -20,8 +20,8 @@ impl OutputBackend for DummyOutput {
         tracing::info!("Dummy output backend started!");
 
         loop {
-            match self.stream.recv() {
-                Ok(packet) => {
+            match self.stream.receive().await {
+                Some(packet) => {
                     tracing::info!(
                         "🎮 Dummy backend received packet from device '{}' with {} events",
                         packet.device_id,
@@ -32,8 +32,8 @@ impl OutputBackend for DummyOutput {
                         tracing::info!("  Event {}: {:?}", i + 1, event);
                     }
                 }
-                Err(e) => {
-                    tracing::error!("Dummy backend failed to receive packet: {}", e);
+                None => {
+                    tracing::info!("Input stream closed, stopping dummy backend");
                     break;
                 }
             }

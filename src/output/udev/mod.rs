@@ -183,8 +183,8 @@ impl UdevOutputBackend {
 
 /// Main udev output implementation
 pub struct UdevOutput {
-    /// Receiver for input event packets
-    pub stream: crossbeam::channel::Receiver<InputEventPacket>,
+    /// Input event stream
+    pub stream: InputEventStream,
     /// Udev backend for managing virtual devices
     pub backend: UdevOutputBackend,
 }
@@ -193,7 +193,7 @@ impl UdevOutput {
     /// Creates a new `UdevOutput` with the given input event stream
     pub fn new(stream: InputEventStream) -> Result<Self> {
         Ok(Self {
-            stream: stream.rx,
+            stream,
             backend: UdevOutputBackend::new()?,
         })
     }
@@ -422,19 +422,15 @@ impl OutputBackend for UdevOutput {
         tracing::info!("Starting udev output backend");
 
         loop {
-            // Use try_recv with a small sleep to make this cancellable
-            match self.stream.try_recv() {
-                Ok(packet) => {
+            // Use async receive method - much cleaner than try_recv with sleep
+            match self.stream.receive().await {
+                Some(packet) => {
                     if let Err(e) = self.process_packet(packet).await {
                         tracing::error!("Failed to process packet: {}", e);
                     }
                 }
-                Err(crossbeam::channel::TryRecvError::Empty) => {
-                    // No data available, sleep briefly to yield control
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
-                Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                    tracing::info!("Input stream disconnected, stopping udev backend");
+                None => {
+                    tracing::info!("Input stream closed, stopping udev backend");
                     break;
                 }
             }

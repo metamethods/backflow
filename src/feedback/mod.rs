@@ -2,11 +2,12 @@
 //! "Feedback" in this case is used to handle feedback messages sent back
 //! to the HID device, such as LED control, haptics, etc.
 //!
-use crossbeam::channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 
-pub mod websocket;
 pub mod generators;
+pub mod websocket;
 
 /// Represents a packet of feedback events, sent over a network or any other communication channel.
 /// (i.e WebSocket, Unix Domain Socket, etc.)
@@ -183,33 +184,38 @@ impl FeedbackEventPacket {
     }
 }
 
-/// Represents a stream of feedback event packets, using crossbeam channels for communication.
+/// Represents a stream of feedback event packets, using tokio mpsc channels for async communication.
 #[derive(Clone)]
 pub struct FeedbackEventStream {
     /// Sender for feedback event packets.
-    pub tx: Sender<FeedbackEventPacket>,
+    pub tx: mpsc::UnboundedSender<FeedbackEventPacket>,
     /// Receiver for feedback event packets.
-    pub rx: Receiver<FeedbackEventPacket>,
+    pub rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<FeedbackEventPacket>>>,
 }
 
 impl FeedbackEventStream {
-    /// Creates a new `FeedbackEventStream` with a crossbeam channel.
+    /// Creates a new `FeedbackEventStream` with a tokio mpsc channel.
     pub fn new() -> Self {
-        let (tx, rx) = crossbeam::channel::unbounded();
-        Self { tx, rx }
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            tx,
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+        }
     }
 
     /// Sends a feedback event packet through the stream.
     pub fn send(
         &self,
         packet: FeedbackEventPacket,
-    ) -> Result<(), crossbeam::channel::SendError<FeedbackEventPacket>> {
+    ) -> Result<(), mpsc::error::SendError<FeedbackEventPacket>> {
         self.tx.send(packet)
     }
 
     /// Receives a feedback event packet from the stream.
-    pub fn receive(&self) -> Result<FeedbackEventPacket, crossbeam::channel::RecvError> {
-        self.rx.recv()
+    /// This is an async method that will await for a packet to be available.
+    pub async fn receive(&self) -> Option<FeedbackEventPacket> {
+        let mut rx = self.rx.lock().await;
+        rx.recv().await
     }
 }
 
@@ -280,8 +286,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_feedback_event_stream_send_receive() {
+    #[tokio::test]
+    async fn test_feedback_event_stream_send_receive() {
         let stream = FeedbackEventStream::new();
         let mut packet = FeedbackEventPacket::new("dev".to_string(), 12345);
         packet.add_event(FeedbackEvent::Led(LedEvent::Set {
@@ -292,7 +298,7 @@ mod tests {
         }));
 
         stream.send(packet.clone()).unwrap();
-        let received = stream.receive().unwrap();
+        let received = stream.receive().await.unwrap();
         assert_eq!(received.device_id, "dev");
         assert_eq!(received.events.len(), 1);
     }

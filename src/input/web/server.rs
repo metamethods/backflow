@@ -275,13 +275,13 @@ impl InputBackend for WebServer {
         );
 
         let feedback_task = {
-            let feedback_rx = feedback_stream.rx.clone();
+            let feedback_stream = feedback_stream.clone();
             let clients = connected_clients_for_broadcast;
             tokio::spawn(async move {
                 loop {
-                    // Use try_recv with a small sleep to make this non-blocking and responsive
-                    match feedback_rx.try_recv() {
-                        Ok(feedback_packet) => {
+                    // Use async receive method - much cleaner than try_recv with sleep
+                    match feedback_stream.receive().await {
+                        Some(feedback_packet) => {
                             let start_time = std::time::Instant::now();
                             trace!(
                                 target: crate::PACKET_PROCESSING_TARGET,
@@ -338,12 +338,8 @@ impl InputBackend for WebServer {
                                 );
                             }
                         }
-                        Err(crossbeam::channel::TryRecvError::Empty) => {
-                            // No data available, sleep briefly to yield control and reduce CPU usage
-                            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-                        }
-                        Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                            error!("Feedback stream disconnected, stopping broadcast task");
+                        None => {
+                            info!("Feedback stream closed, stopping broadcast task");
                             break;
                         }
                     }

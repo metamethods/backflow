@@ -333,8 +333,8 @@ pub async fn feedback_broadcaster_task(
     info!("Starting feedback broadcaster task");
 
     loop {
-        match feedback_stream.receive() {
-            Ok(packet) => {
+        match feedback_stream.receive().await {
+            Some(packet) => {
                 trace!(
                     "Broadcasting feedback packet from device '{}' with {} events",
                     packet.device_id,
@@ -345,8 +345,8 @@ pub async fn feedback_broadcaster_task(
                     error!("Failed to broadcast feedback: {}", e);
                 }
             }
-            Err(e) => {
-                error!("Error receiving feedback from stream: {}", e);
+            None => {
+                info!("Feedback stream closed, stopping broadcaster task");
                 // On channel closed, exit the task
                 break;
             }

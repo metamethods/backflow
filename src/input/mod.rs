@@ -2,8 +2,9 @@
 //! This is the top-level module for all input backends,
 //! such as WebSockets, MIDI, RS232, and others.
 
-use crossbeam::channel::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::mpsc;
 pub mod web;
 
 /// Represents a packet of input events, sent over a network or any other communication channel.
@@ -105,33 +106,38 @@ impl InputEventPacket {
     }
 }
 
-/// Represents a stream of input event packets, using crossbeam channels for communication.
+/// Represents a stream of input event packets, using tokio mpsc channels for async communication.
 #[derive(Clone)]
 pub struct InputEventStream {
     /// Sender for input event packets.
-    pub tx: Sender<InputEventPacket>,
+    pub tx: mpsc::UnboundedSender<InputEventPacket>,
     /// Receiver for input event packets.
-    pub rx: Receiver<InputEventPacket>,
+    pub rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<InputEventPacket>>>,
 }
 
 impl InputEventStream {
-    /// Creates a new `InputEventStream` with a crossbeam channel.
+    /// Creates a new `InputEventStream` with a tokio mpsc channel.
     pub fn new() -> Self {
-        let (tx, rx) = crossbeam::channel::unbounded();
-        Self { tx, rx }
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            tx,
+            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+        }
     }
 
     /// Sends an input event packet through the stream.
     pub fn send(
         &self,
         packet: InputEventPacket,
-    ) -> Result<(), crossbeam::channel::SendError<InputEventPacket>> {
+    ) -> Result<(), mpsc::error::SendError<InputEventPacket>> {
         self.tx.send(packet)
     }
 
     /// Receives an input event packet from the stream.
-    pub fn receive(&self) -> Result<InputEventPacket, crossbeam::channel::RecvError> {
-        self.rx.recv()
+    /// This is an async method that will await for a packet to be available.
+    pub async fn receive(&self) -> Option<InputEventPacket> {
+        let mut rx = self.rx.lock().await;
+        rx.recv().await
     }
 }
 

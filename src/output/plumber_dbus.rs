@@ -149,8 +149,8 @@ impl PlumberOutputBackend {
 }
 
 pub struct DbusPlumberOutput {
-    // Receiver for input event packets
-    pub stream: crossbeam::channel::Receiver<InputEventPacket>,
+    // Input event stream
+    pub stream: InputEventStream,
     // sender for D-Bus messages
     pub backend: PlumberOutputBackend,
 }
@@ -159,7 +159,7 @@ impl DbusPlumberOutput {
     /// Creates a new `DbusPlumberOutput` with the given input event stream.
     pub async fn new(stream: InputEventStream) -> Self {
         Self {
-            stream: stream.rx,
+            stream,
             backend: PlumberOutputBackend::new().await.unwrap(),
         }
     }
@@ -178,9 +178,7 @@ impl DbusPlumberOutput {
             InputEvent::Keyboard(keyboard_event) => {
                 self.handle_keyboard_event(keyboard_event).await
             }
-            InputEvent::Pointer(pointer_event) => {
-                self.handle_pointer_event(pointer_event).await
-            }
+            InputEvent::Pointer(pointer_event) => self.handle_pointer_event(pointer_event).await,
             _ => {
                 // Skip other event types for now
                 tracing::debug!("Skipping unsupported event type");
@@ -290,19 +288,15 @@ impl DbusPlumberOutput {
 impl OutputBackend for DbusPlumberOutput {
     async fn run(&mut self) -> Result<()> {
         loop {
-            // Use try_recv with a small sleep to make this cancellable
-            match self.stream.try_recv() {
-                Ok(packet) => {
+            // Use async receive method - much cleaner than try_recv with sleep
+            match self.stream.receive().await {
+                Some(packet) => {
                     if let Err(e) = self.process_packet(packet).await {
                         tracing::error!("Failed to process packet: {}", e);
                     }
                 }
-                Err(crossbeam::channel::TryRecvError::Empty) => {
-                    // No data available, sleep briefly to yield control
-                    tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-                }
-                Err(crossbeam::channel::TryRecvError::Disconnected) => {
-                    tracing::info!("Input stream disconnected, stopping D-Bus backend");
+                None => {
+                    tracing::info!("Input stream closed, stopping D-Bus backend");
                     break;
                 }
             }
