@@ -1,0 +1,30 @@
+# Backflow Configuration Example
+# This file is an example configuration for Backflow, a universal userspace driver for
+# adaptive controllers.
+#
+# Our current example preset here is for a brokenithm-kb/chuniio setup.
+# Adjust the settings according to your hardware and preferences.
+
+[input.web]
+enabled = true
+# http://localhost:8000/templates/chuni.html
+port = 8000
+host = "0.0.0.0"
+# Enable the uinput backend to allow Backflow to send virtual input events to the system
+# through a virtual keyboard
+[output.uinput]
+enabled = true
+
+# For passing through the LED data from segatools to Backflow, from a Wineprefix,
+# Add this to your launch script:
+# start "Outflow IPC Proxy" outflow.exe --outbound-pipe -p "\\.\pipe\chuni_led" -s "/tmp/chuniio_rgb.sock"
+# replace `outflow.exe` with the path to your Outflow IPC Proxy executable.
+[feedback.chuniio]
+socket_path = "/tmp/chuniio_rgb.sock"
+# Clamping will automatically skip every other LED from the output stream,
+# as they are meant for lighting up the dividers between each zone, not the zones themselves.
+# If you want to use the full 31 LEDs, set this to 31 or remove/comment out this line.
+slider_clamp_lights = 16              # Clamp to 16 zones instead of 31 LEDs
+# This is the offset for the LED IDs.
+# If you have multiple devices, you can set this to a higher number to avoid ID conflicts
+slider_id_offset = 0                  # Start LED IDs from 0
