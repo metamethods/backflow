@@ -23,6 +23,14 @@ class WebSocketHandler {
 
       this.ws.onmessage = (event) => {
         console.log("📥 Received from plumbershim:", event.data);
+        try {
+          const data = JSON.parse(event.data);
+          if (data.events && Array.isArray(data.events)) {
+            this.handleFeedbackPacket(data);
+          }
+        } catch (e) {
+          console.warn("Failed to parse WebSocket message as feedback packet:", e);
+        }
       };
 
       this.ws.onclose = (event) => {
@@ -105,6 +113,67 @@ class WebSocketHandler {
 
     return this.sendInputEvent(deviceId, events);
   }
+
+  handleFeedbackPacket(packet) {
+    console.log("🎨 Processing feedback packet:", packet);
+    for (const event of packet.events) {
+      if (event.Led && event.Led.Set) {
+        this.handleLedEvent(event.Led.Set);
+      }
+    }
+  }
+
+  handleLedEvent(ledEvent) {
+    const { led_id, on, brightness, rgb } = ledEvent;
+    console.log(`💡 LED ${led_id}: on=${on}, brightness=${brightness}, rgb=${rgb}`);
+    
+    // Find the corresponding grid cell
+    const cell = this.getCellByLedId(led_id);
+    if (cell) {
+      this.applyLedToCell(cell, on, brightness, rgb);
+    }
+  }
+
+  getCellByLedId(ledId) {
+    // Map LED IDs to grid cells
+    // For chunithm, we have 6 air sensors (1-6) and 16 slider keys (q,w,e,r,t,y,u,i,o,p,a,s,d,f,g,h)
+    const cells = document.querySelectorAll('.grid-cell');
+    if (ledId >= 0 && ledId < cells.length) {
+      return cells[ledId];
+    }
+    return null;
+  }
+
+  applyLedToCell(cell, on, brightness, rgb) {
+    if (!on) {
+      // Turn off LED - remove RGB styling but keep any existing active state
+      cell.style.removeProperty('background-color');
+      cell.style.removeProperty('box-shadow');
+      cell.classList.remove('rgb-active');
+      return;
+    }
+
+    let color = 'white';
+    let r = 255, g = 255, b = 255;
+    
+    if (rgb && Array.isArray(rgb) && rgb.length >= 3) {
+      [r, g, b] = rgb;
+      color = `rgb(${r}, ${g}, ${b})`;
+    }
+
+    // Apply brightness if specified
+    if (brightness !== null && brightness !== undefined) {
+      const alpha = brightness / 255;
+      color = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    // Apply the RGB color
+    cell.style.backgroundColor = color;
+    cell.style.boxShadow = `0 0 15px ${color}`;
+    cell.classList.add('rgb-active');
+  }
+
+
 
   close() {
     if (this.ws) {
@@ -675,9 +744,8 @@ class GridController {
     return this.cells.length;
   }
 
-  setFeedbackHandler(newHandler) {
-    this.feedbackHandler.resetAll();
-    this.feedbackHandler = newHandler;
+  setFeedbackHandler(handler) {
+    this.feedbackHandler = handler;
   }
 }
 

@@ -79,6 +79,22 @@ body {
     -webkit-color: black !important;
 }
 
+/* RGB feedback styling - lower priority than active state */
+.grid-cell.rgb-active {
+    transition: background-color 0.1s ease, box-shadow 0.1s ease;
+}
+
+/* When both RGB and touch are active, touch takes precedence */
+.grid-cell.active.rgb-active {
+    background-color: white !important;
+    color: black !important;
+}
+
+/* RGB glow effect when not actively touched */
+.grid-cell.rgb-active:not(.active) {
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
 /* Fallback for Safari touch issues */
 /* .grid-cell:active {
     background-color: rgba(255, 255, 255, 0.8) !important;
