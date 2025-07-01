@@ -9,7 +9,7 @@ use axum::{
         ConnectInfo, State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    response::Response,
+    response::{Json, Response},
     routing::get,
 };
 use eyre::{Context, Result};
@@ -41,6 +41,14 @@ pub struct WebServer {
     feedback_stream: FeedbackEventStream,
     /// Path to the directory containing web UI assets
     web_assets_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct WebTemplateResponse {
+    /// Relative web path to the custom template
+    pub path: String,
+    /// Name of the custom template, usually the name of the directory
+    pub name: String,
 }
 
 impl WebServer {
@@ -109,6 +117,51 @@ impl WebServer {
         }
     }
 
+    pub fn list_custom_layouts(&self) -> Vec<WebTemplateResponse> {
+        if let Some(assets_path) = &self.web_assets_path {
+            let custom_dir = assets_path.join("custom");
+            if custom_dir.is_dir() {
+            match std::fs::read_dir(&custom_dir) {
+                Ok(entries) => entries
+                .filter_map(|entry| {
+                    entry.ok().and_then(|e| {
+                    let path = e.path();
+                    if path.is_dir() {
+                        // Look for the first HTML file in this directory
+                        if let Ok(files) = std::fs::read_dir(&path) {
+                        for file in files.flatten() {
+                            let file_path = file.path();
+                            if let Some(ext) = file_path.extension() {
+                            if ext == "html" {
+                                if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
+                                if let Some(file_name) = file_path.file_name().and_then(|n| n.to_str()) {
+                                    return Some(WebTemplateResponse {
+                                    path: format!("custom/{}/{}", dir_name, file_name),
+                                    name: dir_name.to_string(),
+                                    });
+                                }
+                                }
+                            }
+                            }
+                        }
+                        }
+                        None
+                    } else {
+                        None
+                    }
+                    })
+                })
+                .collect(),
+                Err(_) => Vec::new(),
+            }
+            } else {
+            Vec::new()
+            }
+        } else {
+            Vec::new()
+        }
+    }
+
     /// Build the application router with all routes
     fn build_router(&self) -> Router {
         // Create shared state for bidirectional WebSocket communication
@@ -172,10 +225,19 @@ impl InputBackend for WebServer {
         // Clone the connected_clients reference for the feedback task
         let connected_clients_for_broadcast = ws_state.connected_clients.clone();
 
-        // Create the router with the shared state
-        let mut router = Router::new()
+        // Create the WebSocket router with WebSocket state
+        let ws_router = Router::new()
             .route("/ws", get(bidirectional_ws_handler))
             .with_state(ws_state.clone());
+
+        // Create API router with server state
+        let server_arc = Arc::new(self.clone());
+        let api_router = Router::new()
+            .route("/api/layouts", get(get_custom_layouts))
+            .with_state(server_arc);
+
+        // Merge routers
+        let mut router = ws_router.merge(api_router);
 
         // Add static file serving if web UI is enabled
         if let Some(assets_path) = &self.web_assets_path {
@@ -424,6 +486,73 @@ mod tests {
         assert_eq!(parsed_feedback.device_id, "test-device");
         assert_eq!(parsed_input.events.len(), 1);
         assert_eq!(parsed_feedback.events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_api_layouts_endpoint() {
+        use std::fs;
+        
+        // Create a temporary directory structure for testing
+        let temp_dir = std::env::temp_dir().join("plumbershim_test_layouts");
+        let web_dir = &temp_dir;
+        let custom_dir = web_dir.join("custom");
+        let layout1_dir = custom_dir.join("chuni");
+        let layout2_dir = custom_dir.join("keyboard");
+        
+        // Clean up any existing test directory
+        let _ = fs::remove_dir_all(&temp_dir);
+        
+        fs::create_dir_all(&layout1_dir).unwrap();
+        fs::create_dir_all(&layout2_dir).unwrap();
+        
+        // Create HTML files in each layout directory
+        fs::write(layout1_dir.join("chuni.html"), "<html><body>Chuni Layout</body></html>").unwrap();
+        fs::write(layout2_dir.join("keys.html"), "<html><body>Keyboard Layout</body></html>").unwrap();
+        
+        // Create a web server with the temp directory
+        let input_stream = InputEventStream::new();
+        let feedback_stream = FeedbackEventStream::new();
+        let server = WebServer::with_web_ui(
+            "127.0.0.1:0".parse().unwrap(),
+            input_stream,
+            feedback_stream,
+            web_dir.to_path_buf(),
+        );
+        
+        // Test the list_custom_layouts method
+        let layouts = server.list_custom_layouts();
+        
+        assert_eq!(layouts.len(), 2);
+        
+        // Sort to ensure consistent ordering for testing
+        let mut sorted_layouts = layouts;
+        sorted_layouts.sort_by(|a, b| a.name.cmp(&b.name));
+        
+        assert_eq!(sorted_layouts[0].name, "chuni");
+        assert_eq!(sorted_layouts[0].path, "custom/chuni/chuni.html");
+        
+        assert_eq!(sorted_layouts[1].name, "keyboard");
+        assert_eq!(sorted_layouts[1].path, "custom/keyboard/keys.html");
+        
+        // Clean up
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_web_template_response_serialization() {
+        let response = WebTemplateResponse {
+            path: "custom/chuni/layout.html".to_string(),
+            name: "chuni".to_string(),
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        let expected = r#"{"path":"custom/chuni/layout.html","name":"chuni"}"#;
+        assert_eq!(json, expected);
+
+        // Test deserialization
+        let deserialized: WebTemplateResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.path, "custom/chuni/layout.html");
+        assert_eq!(deserialized.name, "chuni");
     }
 }
 
@@ -694,4 +823,9 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
     }
 
     info!("WebSocket connection {} closed", addr);
+}
+
+/// REST API handler for listing custom layouts
+async fn get_custom_layouts(State(server): State<Arc<WebServer>>) -> Json<Vec<WebTemplateResponse>> {
+    Json(server.list_custom_layouts())
 }
