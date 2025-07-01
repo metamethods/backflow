@@ -367,7 +367,7 @@ mod tests {
         assert_eq!(slider_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
         assert_eq!(slider_config.remap.get("SLIDER_2"), Some(&"KEY_S".to_string()));
         assert_eq!(slider_config.remap.get("SLIDER_3"), Some(&"KEY_D".to_string()));
-        assert_eq!(slider_config.remap_whitelist, false); // Should default to false
+        assert!(!slider_config.remap_whitelist); // Should default to false
         
         // Test custom gamepad
         let gamepad_config = config.device.get("custom_gamepad").unwrap();
@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(gamepad_config.device_type, "keyboard");
         assert_eq!(gamepad_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
         assert_eq!(gamepad_config.remap.get("BUTTON_A"), Some(&"KEY_Z".to_string()));
-        assert_eq!(gamepad_config.remap_whitelist, false); // Should default to false
+        assert!(!gamepad_config.remap_whitelist); // Should default to false
         
         // Test other configuration sections remain working
         assert!(config.input.web.is_some());
@@ -398,7 +398,7 @@ mod tests {
         let device_config = config.device.get("whitelist_device").unwrap();
         assert_eq!(device_config.map_backend, "uinput");
         assert_eq!(device_config.device_type, "keyboard");
-        assert_eq!(device_config.remap_whitelist, true);
+        assert!(device_config.remap_whitelist);
         assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
         assert_eq!(device_config.remap.get("GAME_1"), Some(&"KEY_SPACE".to_string()));
     }
@@ -415,7 +415,7 @@ mod tests {
         let device_config = config.device.get("ignore_all_device").unwrap();
         assert_eq!(device_config.map_backend, "uinput");
         assert_eq!(device_config.device_type, "keyboard");
-        assert_eq!(device_config.remap_whitelist, true);
+        assert!(device_config.remap_whitelist);
         assert!(device_config.remap.is_empty());
     }
 
@@ -434,7 +434,7 @@ mod tests {
         let device_config = config.device.get("passthrough_device").unwrap();
         assert_eq!(device_config.map_backend, "uinput");
         assert_eq!(device_config.device_type, "keyboard");
-        assert_eq!(device_config.remap_whitelist, false);
+        assert!(!device_config.remap_whitelist);
         assert_eq!(device_config.remap.get("SLIDER_1"), Some(&"KEY_A".to_string()));
     }
 }

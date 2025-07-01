@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use tracing::{debug, warn};
 
 /// Device filter that applies per-device transformations and routing
+#[derive(Clone)]
 pub struct DeviceFilter {
     /// Device configurations mapped by device ID
     device_configs: HashMap<String, DeviceConfig>,
@@ -29,13 +30,13 @@ impl DeviceFilter {
     pub fn transform_packet(&self, mut packet: InputEventPacket) -> Result<InputEventPacket> {
         // Get device configuration for this device ID
         let device_config = self.device_configs.get(&packet.device_id);
-        
+
         if let Some(config) = device_config {
             debug!(
                 "Applying device config for device '{}': backend={}, type={}, whitelist={}",
                 packet.device_id, config.map_backend, config.device_type, config.remap_whitelist
             );
-            
+
             // Transform and filter events based on device configuration
             let mut filtered_events = Vec::new();
             for mut event in packet.events.into_iter() {
@@ -56,7 +57,11 @@ impl DeviceFilter {
 
     /// Transform and filter a single input event based on device configuration
     /// Returns true if the event should be kept, false if it should be filtered out
-    fn transform_and_filter_event(&self, event: &mut InputEvent, config: &DeviceConfig) -> Result<bool> {
+    fn transform_and_filter_event(
+        &self,
+        event: &mut InputEvent,
+        config: &DeviceConfig,
+    ) -> Result<bool> {
         match event {
             InputEvent::Keyboard(keyboard_event) => {
                 self.transform_and_filter_keyboard_event(keyboard_event, config)
@@ -76,15 +81,19 @@ impl DeviceFilter {
         }
     }
 
-    /// Transform a single input event based on device configuration (legacy method for compatibility)
-    fn transform_event(&self, event: &mut InputEvent, config: &DeviceConfig) -> Result<()> {
-        self.transform_and_filter_event(event, config)?;
-        Ok(())
-    }
+    // /// Transform a single input event based on device configuration (legacy method for compatibility)
+    // fn transform_event(&self, event: &mut InputEvent, config: &DeviceConfig) -> Result<()> {
+    //     self.transform_and_filter_event(event, config)?;
+    //     Ok(())
+    // }
 
     /// Transform keyboard events based on device remapping rules and whitelist settings
     /// Returns true if the event should be kept, false if it should be filtered out
-    fn transform_and_filter_keyboard_event(&self, event: &mut KeyboardEvent, config: &DeviceConfig) -> Result<bool> {
+    fn transform_and_filter_keyboard_event(
+        &self,
+        event: &mut KeyboardEvent,
+        config: &DeviceConfig,
+    ) -> Result<bool> {
         let key = match event {
             KeyboardEvent::KeyPress { key } => key,
             KeyboardEvent::KeyRelease { key } => key,
@@ -116,22 +125,27 @@ impl DeviceFilter {
         Ok(true) // Keep the event in non-whitelist mode
     }
 
-    /// Transform keyboard events based on device remapping rules (legacy method for compatibility)
-    fn transform_keyboard_event(&self, event: &mut KeyboardEvent, config: &DeviceConfig) -> Result<()> {
-        self.transform_and_filter_keyboard_event(event, config)?;
-        Ok(())
-    }
+    // /// Transform keyboard events based on device remapping rules (legacy method for compatibility)
+    // fn transform_keyboard_event(
+    //     &self,
+    //     event: &mut KeyboardEvent,
+    //     config: &DeviceConfig,
+    // ) -> Result<()> {
+    //     self.transform_and_filter_keyboard_event(event, config)?;
+    //     Ok(())
+    // }
 
     /// Check if a key string appears to be a standard evdev key code
     fn is_standard_evdev_key(key: &str) -> bool {
         // Standard evdev keys typically start with KEY_, BTN_, etc.
-        key.starts_with("KEY_") || 
-        key.starts_with("BTN_") || 
-        key.starts_with("ABS_") || 
-        key.starts_with("REL_")
+        key.starts_with("KEY_")
+            || key.starts_with("BTN_")
+            || key.starts_with("ABS_")
+            || key.starts_with("REL_")
     }
 
     /// Get the target backend for a specific device
+    #[allow(dead_code)]
     pub fn get_device_backend(&self, device_id: &str) -> Option<&str> {
         self.device_configs
             .get(device_id)
@@ -139,6 +153,7 @@ impl DeviceFilter {
     }
 
     /// Get the device type for a specific device
+    #[allow(dead_code)]
     pub fn get_device_type(&self, device_id: &str) -> Option<&str> {
         self.device_configs
             .get(device_id)
@@ -146,6 +161,7 @@ impl DeviceFilter {
     }
 
     /// Check if a device has any configuration
+    #[allow(dead_code)]
     pub fn has_device_config(&self, device_id: &str) -> bool {
         self.device_configs.contains_key(device_id)
     }
@@ -160,22 +176,22 @@ mod tests {
 
     fn create_test_config() -> AppConfig {
         let mut device_configs = HashMap::new();
-        
+
         // Create a test device config with remapping
         let mut remap = HashMap::new();
         remap.insert("SLIDER_1".to_string(), "KEY_A".to_string());
         remap.insert("SLIDER_2".to_string(), "KEY_B".to_string());
         remap.insert("GAME_1".to_string(), "KEY_SPACE".to_string());
-        
+
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
             device_type: "keyboard".to_string(),
             remap,
             remap_whitelist: false,
         };
-        
+
         device_configs.insert("test_device".to_string(), device_config);
-        
+
         AppConfig {
             device: device_configs,
             ..Default::default()
@@ -186,7 +202,7 @@ mod tests {
     fn test_device_filter_creation() {
         let config = create_test_config();
         let filter = DeviceFilter::new(&config);
-        
+
         assert!(filter.has_device_config("test_device"));
         assert!(!filter.has_device_config("nonexistent_device"));
         assert_eq!(filter.get_device_backend("test_device"), Some("uinput"));
@@ -197,7 +213,7 @@ mod tests {
     fn test_key_remapping() {
         let config = create_test_config();
         let filter = DeviceFilter::new(&config);
-        
+
         // Create a test packet with custom keys
         let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
@@ -206,9 +222,9 @@ mod tests {
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyRelease {
             key: "GAME_1".to_string(),
         }));
-        
+
         let transformed_packet = filter.transform_packet(packet).unwrap();
-        
+
         // Check that keys were remapped
         match &transformed_packet.events[0] {
             InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
@@ -216,7 +232,7 @@ mod tests {
             }
             _ => panic!("Expected KeyPress event"),
         }
-        
+
         match &transformed_packet.events[1] {
             InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
                 assert_eq!(key, "KEY_SPACE");
@@ -229,15 +245,15 @@ mod tests {
     fn test_standard_keys_passthrough() {
         let config = create_test_config();
         let filter = DeviceFilter::new(&config);
-        
+
         // Create a packet with standard evdev keys
         let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
             key: "KEY_A".to_string(),
         }));
-        
+
         let transformed_packet = filter.transform_packet(packet).unwrap();
-        
+
         // Standard keys should pass through unchanged
         match &transformed_packet.events[0] {
             InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
@@ -251,15 +267,15 @@ mod tests {
     fn test_unconfigured_device() {
         let config = create_test_config();
         let filter = DeviceFilter::new(&config);
-        
+
         // Create a packet for a device without configuration
         let mut packet = InputEventPacket::new("unknown_device".to_string(), 12345);
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
             key: "SLIDER_1".to_string(),
         }));
-        
+
         let transformed_packet = filter.transform_packet(packet).unwrap();
-        
+
         // Keys should remain unchanged for unconfigured devices
         match &transformed_packet.events[0] {
             InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
@@ -275,7 +291,7 @@ mod tests {
         assert!(DeviceFilter::is_standard_evdev_key("BTN_LEFT"));
         assert!(DeviceFilter::is_standard_evdev_key("ABS_X"));
         assert!(DeviceFilter::is_standard_evdev_key("REL_X"));
-        
+
         assert!(!DeviceFilter::is_standard_evdev_key("SLIDER_1"));
         assert!(!DeviceFilter::is_standard_evdev_key("GAME_1"));
         assert!(!DeviceFilter::is_standard_evdev_key("CUSTOM_KEY"));
@@ -284,28 +300,28 @@ mod tests {
     #[test]
     fn test_remap_whitelist_enabled_with_mappings() {
         let mut device_configs = HashMap::new();
-        
+
         // Create a test device config with whitelist enabled
         let mut remap = HashMap::new();
         remap.insert("SLIDER_1".to_string(), "KEY_A".to_string());
         remap.insert("GAME_1".to_string(), "KEY_SPACE".to_string());
-        
+
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
             device_type: "keyboard".to_string(),
             remap,
             remap_whitelist: true,
         };
-        
+
         device_configs.insert("test_device".to_string(), device_config);
-        
+
         let config = AppConfig {
             device: device_configs,
             ..Default::default()
         };
-        
+
         let filter = DeviceFilter::new(&config);
-        
+
         // Create a packet with mixed keys - some in remap table, some not
         let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
@@ -320,12 +336,12 @@ mod tests {
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
             key: "KEY_B".to_string(), // Standard key but should be filtered out (not in remap table)
         }));
-        
+
         let transformed_packet = filter.transform_packet(packet).unwrap();
-        
+
         // Should only have 2 events (the ones in the remap table)
         assert_eq!(transformed_packet.events.len(), 2);
-        
+
         // Check that the kept events were remapped correctly
         match &transformed_packet.events[0] {
             InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
@@ -333,7 +349,7 @@ mod tests {
             }
             _ => panic!("Expected KeyPress event"),
         }
-        
+
         match &transformed_packet.events[1] {
             InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
                 assert_eq!(key, "KEY_SPACE"); // GAME_1 -> KEY_SPACE
@@ -345,7 +361,7 @@ mod tests {
     #[test]
     fn test_remap_whitelist_enabled_no_mappings() {
         let mut device_configs = HashMap::new();
-        
+
         // Create a test device config with whitelist enabled but no remap table
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
@@ -353,16 +369,16 @@ mod tests {
             remap: HashMap::new(), // Empty remap table
             remap_whitelist: true,
         };
-        
+
         device_configs.insert("test_device".to_string(), device_config);
-        
+
         let config = AppConfig {
             device: device_configs,
             ..Default::default()
         };
-        
+
         let filter = DeviceFilter::new(&config);
-        
+
         // Create a packet with various keys
         let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
@@ -374,9 +390,9 @@ mod tests {
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
             key: "BTN_LEFT".to_string(),
         }));
-        
+
         let transformed_packet = filter.transform_packet(packet).unwrap();
-        
+
         // All events should be filtered out since whitelist is enabled but remap table is empty
         assert_eq!(transformed_packet.events.len(), 0);
     }
@@ -384,27 +400,27 @@ mod tests {
     #[test]
     fn test_remap_whitelist_disabled_default_behavior() {
         let mut device_configs = HashMap::new();
-        
+
         // Create a test device config with whitelist disabled (default behavior)
         let mut remap = HashMap::new();
         remap.insert("SLIDER_1".to_string(), "KEY_A".to_string());
-        
+
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
             device_type: "keyboard".to_string(),
             remap,
             remap_whitelist: false, // Explicitly disabled
         };
-        
+
         device_configs.insert("test_device".to_string(), device_config);
-        
+
         let config = AppConfig {
             device: device_configs,
             ..Default::default()
         };
-        
+
         let filter = DeviceFilter::new(&config);
-        
+
         // Create a packet with mixed keys
         let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
@@ -416,12 +432,12 @@ mod tests {
         packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
             key: "KEY_B".to_string(), // Should pass through unchanged
         }));
-        
+
         let transformed_packet = filter.transform_packet(packet).unwrap();
-        
+
         // All events should be kept in non-whitelist mode
         assert_eq!(transformed_packet.events.len(), 3);
-        
+
         // Check transformations
         match &transformed_packet.events[0] {
             InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
@@ -429,14 +445,14 @@ mod tests {
             }
             _ => panic!("Expected KeyPress event"),
         }
-        
+
         match &transformed_packet.events[1] {
             InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
                 assert_eq!(key, "SLIDER_2"); // unchanged
             }
             _ => panic!("Expected KeyPress event"),
         }
-        
+
         match &transformed_packet.events[2] {
             InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
                 assert_eq!(key, "KEY_B"); // unchanged
@@ -449,6 +465,6 @@ mod tests {
     fn test_remap_whitelist_default_value() {
         // Test that remap_whitelist defaults to false
         let default_config = DeviceConfig::default();
-        assert_eq!(default_config.remap_whitelist, false);
+        assert!(!default_config.remap_whitelist);
     }
 }

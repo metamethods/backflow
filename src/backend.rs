@@ -120,7 +120,7 @@ impl Backend {
 
         let raw_input_stream = self.streams.input.clone();
         let transformed_output_stream = self.streams.transformed_input.clone();
-        let device_filter = DeviceFilter::new(&self.config);
+        let device_filter = self.device_filter.clone();
 
         let handle = tokio::spawn(async move {
             loop {
@@ -129,7 +129,8 @@ impl Backend {
                     match device_filter.transform_packet(packet) {
                         Ok(transformed_packet) => {
                             // Send to transformed stream
-                            if let Err(e) = transformed_output_stream.send(transformed_packet).await {
+                            if let Err(e) = transformed_output_stream.send(transformed_packet).await
+                            {
                                 tracing::error!("Failed to send transformed packet: {}", e);
                                 break;
                             }

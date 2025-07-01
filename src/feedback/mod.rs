@@ -5,7 +5,6 @@
 use serde::{Deserialize, Serialize};
 
 pub mod generators;
-pub mod websocket;
 
 /// Represents a packet of feedback events, sent over a network or any other communication channel.
 /// (i.e WebSocket, Unix Domain Socket, etc.)
@@ -101,12 +100,6 @@ pub enum FeedbackEvent {
     Haptic(HapticEvent),
 }
 
-#[async_trait::async_trait]
-pub trait FeedbackBackend: Send {
-    /// Starts the feedback backend, processing feedback events and sending them to the appropriate device.
-    async fn run(&mut self) -> eyre::Result<()>;
-}
-
 /// LED control events for controlling device LEDs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum LedEvent {
@@ -166,8 +159,10 @@ pub enum HapticEvent {
     },
 }
 
+// these are used in tests
 impl FeedbackEventPacket {
     /// Creates a new `FeedbackEventPacket` with the given device ID and timestamp.
+    #[allow(dead_code)]
     pub fn new(device_id: String, timestamp: u64) -> Self {
         Self {
             device_id,
@@ -177,6 +172,7 @@ impl FeedbackEventPacket {
     }
 
     /// Adds an event to the packet.
+    #[allow(dead_code)]
     pub fn add_event(&mut self, event: FeedbackEvent) {
         self.events.push(event);
     }
