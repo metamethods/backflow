@@ -22,9 +22,15 @@
         <meta name="theme-color" content="#000000">
     </head>
     <body>
+        <div class="custom-dropdown-section">
+            <label for="custom-dropdown">Custom:</label>
+            <select id="custom-dropdown">
+                <option value="">Select a custom template...</option>
+            </select>
+        </div>
         <div class="fullscreen-nav">
-            <a href="chuni.html" class="nav-button">Chuni Controller</a>
-            <a href="keyboard.html" class="nav-button">Keyboard</a>
+            <a href="templates/chuni.html" class="nav-button">Chuni Controller</a>
+            <a href="templates/keyboard.html" class="nav-button">Keyboard</a>
         </div>
     <script>
         // Register the service worker
@@ -35,6 +41,22 @@
                 console.error('SW registration failed:', err);
             });
         }
+
+        // Load custom HTML files
+        async function loadCustomFiles() {
+          // do that
+        }
+
+        // Handle dropdown selection
+        document.getElementById('custom-dropdown').addEventListener('change', function() {
+            const selectedValue = this.value;
+            if (selectedValue) {
+                window.location.href = selectedValue;
+            }
+        });
+
+        // Load custom files when page loads
+        document.addEventListener('DOMContentLoaded', loadCustomFiles);
     </script>
     </body>
 </html>

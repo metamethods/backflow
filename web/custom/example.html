@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" /> <!-- this is not needed but very recommended, as it allows special characters to be displayed correctly -->
+        <title>Backflow Example</title>
+        <link rel="stylesheet" href="../styles.css" /> <!-- default styles, required but you can add your own by importing another stylesheet -->
+        <link rel="stylesheet" href="example.css" /> <!-- like so -->
+        <script src="../script.js" defer></script> <!-- main backflow script, absolutely required -->
+    </head>
+    <body>
+        <div class="grid-container">
+            <div class="grid-row">
+                <!--
+                all pretty self explanatory, but the most important thing here is:
+                - The grid-container class is used to create a grid layout.
+                - The grid-row class is used to create a row within the grid layout.
+                - The grid-cell class is used to create a cell within the grid layout.
+                - The data-key attribute is used to specify the key that will be used to control the cell.
+                
+                you don't *need* to adhere to this specific layout, you can write your own CSS as long as the key is a div,
+                and data-key is specified to a valid keycode on the keyboard.
+                -->
+                <div class="grid-cell" data-key="d"></div>
+                <div class="grid-cell" data-key="f"></div>
+                <div class="grid-cell" data-key="j"></div>
+                <div class="grid-cell" data-key="k"></div>
+            </div>
+        </div>
+    </body>
+</html>

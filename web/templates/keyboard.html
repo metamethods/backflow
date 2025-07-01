@@ -1,10 +1,11 @@
 <!doctype html>
 <html>
     <head>
+        <meta charset="UTF-8" />
         <title>Backflow Web - Virtual Keyboard</title>
-        <link rel="stylesheet" href="styles.css" />
+        <link rel="stylesheet" href="../../styles.css" />
         <link rel="stylesheet" href="keyboard.css" />
-        <script src="script.js" defer></script>
+        <script src="../script.js" defer></script>
     </head>
     <body>
         <div class="keyboard-container">
@@ -23,9 +24,11 @@
                 <div class="grid-cell key" data-key="0">0</div>
                 <div class="grid-cell key" data-key="-">-</div>
                 <div class="grid-cell key" data-key="=">=</div>
-                <div class="grid-cell key backspace" data-key="Backspace">⌫</div>
+                <div class="grid-cell key backspace" data-key="Backspace">
+                    ⌫
+                </div>
             </div>
-            
+
             <!-- QWERTY row -->
             <div class="keyboard-row">
                 <div class="grid-cell key tab" data-key="Tab">Tab</div>
@@ -43,7 +46,7 @@
                 <div class="grid-cell key" data-key="]">]</div>
                 <div class="grid-cell key" data-key="\">\</div>
             </div>
-            
+
             <!-- ASDF row -->
             <div class="keyboard-row">
                 <div class="grid-cell key caps" data-key="CapsLock">Caps</div>
@@ -60,10 +63,12 @@
                 <div class="grid-cell key" data-key="'">'</div>
                 <div class="grid-cell key enter" data-key="Enter">Enter</div>
             </div>
-            
+
             <!-- ZXCV row -->
             <div class="keyboard-row">
-                <div class="grid-cell key shift" data-key="ShiftLeft">Shift</div>
+                <div class="grid-cell key shift" data-key="ShiftLeft">
+                    Shift
+                </div>
                 <div class="grid-cell key" data-key="z">Z</div>
                 <div class="grid-cell key" data-key="x">X</div>
                 <div class="grid-cell key" data-key="c">C</div>
@@ -74,16 +79,22 @@
                 <div class="grid-cell key" data-key=",">,</div>
                 <div class="grid-cell key" data-key=".">.</div>
                 <div class="grid-cell key" data-key="/">/</div>
-                <div class="grid-cell key shift" data-key="ShiftRight">Shift</div>
+                <div class="grid-cell key shift" data-key="ShiftRight">
+                    Shift
+                </div>
             </div>
-            
+
             <!-- Space row -->
             <div class="keyboard-row">
-                <div class="grid-cell key ctrl" data-key="ControlLeft">Ctrl</div>
+                <div class="grid-cell key ctrl" data-key="ControlLeft">
+                    Ctrl
+                </div>
                 <div class="grid-cell key alt" data-key="AltLeft">Alt</div>
                 <div class="grid-cell key space" data-key=" ">Space</div>
                 <div class="grid-cell key alt" data-key="AltRight">Alt</div>
-                <div class="grid-cell key ctrl" data-key="ControlRight">Ctrl</div>
+                <div class="grid-cell key ctrl" data-key="ControlRight">
+                    Ctrl
+                </div>
             </div>
         </div>
     </body>

@@ -127,3 +127,43 @@ body {
 .nav-button:hover {
     background-color: rgba(255, 255, 255, 0.1);
 }
+
+.custom-dropdown-section {
+    position: fixed;
+    top: 20px;
+    left: 20px;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.8);
+    padding: 10px 15px;
+    border-radius: 8px;
+    border: 1px solid white;
+    font-family: Arial, sans-serif;
+}
+
+.custom-dropdown-section label {
+    color: white;
+    font-size: 14px;
+    font-weight: bold;
+    margin-right: 10px;
+}
+
+.custom-dropdown-section select {
+    background-color: #333;
+    color: white;
+    border: 1px solid #666;
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 14px;
+    min-width: 180px;
+}
+
+.custom-dropdown-section select:focus {
+    outline: none;
+    border-color: white;
+    background-color: #444;
+}
+
+.custom-dropdown-section select option {
+    background-color: #333;
+    color: white;
+}
