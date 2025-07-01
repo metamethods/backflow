@@ -6,7 +6,7 @@
 //! and routing events to specific output backends based on device configuration.
 
 use crate::config::{AppConfig, DeviceConfig};
-use crate::input::{InputEvent, InputEventPacket, KeyboardEvent, PointerEvent, JoystickEvent};
+use crate::input::{InputEvent, InputEventPacket, KeyboardEvent};
 use eyre::Result;
 use std::collections::HashMap;
 use tracing::{debug, warn};
