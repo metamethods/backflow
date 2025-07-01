@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RGB Test - Backflow</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #1a1a1a;
+            color: white;
+        }
+        .control-section {
+            background: #2a2a2a;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            border: 1px solid #444;
+        }
+        .control-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        label {
+            min-width: 80px;
+            font-weight: bold;
+        }
+        input[type="range"] {
+            flex: 1;
+        }
+        input[type="number"] {
+            width: 60px;
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 4px;
+        }
+        select {
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        button {
+            background: #007acc;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #005fa3;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .color-preview {
+            width: 50px;
+            height: 50px;
+            border: 2px solid white;
+            border-radius: 4px;
+            display: inline-block;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.connected {
+            background: #2d5a2d;
+            border: 1px solid #4a8f4a;
+        }
+        .status.disconnected {
+            background: #5a2d2d;
+            border: 1px solid #8f4a4a;
+        }
+        .preset-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+        }
+        .led-mapping {
+            background: #333;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        .led-grid {
+            display: grid;
+            grid-template-columns: repeat(8, 1fr);
+            gap: 5px;
+            margin: 10px 0;
+        }
+        .led-item {
+            background: #444;
+            padding: 8px;
+            text-align: center;
+            border-radius: 4px;
+            font-size: 12px;
+            border: 1px solid #666;
+        }
+        .led-item.air-sensor {
+            background: #4a4a7a;
+        }
+        .led-item.slider-button {
+            background: #4a7a4a;
+        }
+    </style>
+</head>
+<body>
+    <h1>RGB LED Test Controller</h1>
+    <p><strong>LED Mapping:</strong> Buttons first (0-15), Air sensors last (16-21)</p>
+    
+    <div class="status" id="status">
+        <span id="statusText">Connecting...</span>
+    </div>
+
+    <div class="led-mapping">
+        <h3>LED Mapping Reference</h3>
+        <div>
+            <strong>Slider Buttons (LED IDs 0-15):</strong>
+            <div class="led-grid">
+                <div class="led-item slider-button">0: q</div>
+                <div class="led-item slider-button">1: w</div>
+                <div class="led-item slider-button">2: e</div>
+                <div class="led-item slider-button">3: r</div>
+                <div class="led-item slider-button">4: t</div>
+                <div class="led-item slider-button">5: y</div>
+                <div class="led-item slider-button">6: u</div>
+                <div class="led-item slider-button">7: i</div>
+                <div class="led-item slider-button">8: o</div>
+                <div class="led-item slider-button">9: p</div>
+                <div class="led-item slider-button">10: a</div>
+                <div class="led-item slider-button">11: s</div>
+                <div class="led-item slider-button">12: d</div>
+                <div class="led-item slider-button">13: f</div>
+                <div class="led-item slider-button">14: g</div>
+                <div class="led-item slider-button">15: h</div>
+            </div>
+        </div>
+        <div>
+            <strong>Air Sensors (LED IDs 16-21):</strong>
+            <div class="led-grid" style="grid-template-columns: repeat(6, 1fr);">
+                <div class="led-item air-sensor">16: Air 1</div>
+                <div class="led-item air-sensor">17: Air 2</div>
+                <div class="led-item air-sensor">18: Air 3</div>
+                <div class="led-item air-sensor">19: Air 4</div>
+                <div class="led-item air-sensor">20: Air 5</div>
+                <div class="led-item air-sensor">21: Air 6</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="control-section">
+        <h3>Individual LED Control</h3>
+        <div class="control-row">
+            <label>LED ID:</label>
+            <input type="number" id="ledId" min="0" max="21" value="0">
+            <select id="ledQuickSelect">
+                <option value="">Quick Select...</option>
+                <optgroup label="Slider Buttons (0-15)">
+                    <option value="0">0: q</option>
+                    <option value="1">1: w</option>
+                    <option value="2">2: e</option>
+                    <option value="3">3: r</option>
+                    <option value="4">4: t</option>
+                    <option value="5">5: y</option>
+                    <option value="6">6: u</option>
+                    <option value="7">7: i</option>
+                    <option value="8">8: o</option>
+                    <option value="9">9: p</option>
+                    <option value="10">10: a</option>
+                    <option value="11">11: s</option>
+                    <option value="12">12: d</option>
+                    <option value="13">13: f</option>
+                    <option value="14">14: g</option>
+                    <option value="15">15: h</option>
+                </optgroup>
+                <optgroup label="Air Sensors (16-21)">
+                    <option value="16">16: Air 1</option>
+                    <option value="17">17: Air 2</option>
+                    <option value="18">18: Air 3</option>
+                    <option value="19">19: Air 4</option>
+                    <option value="20">20: Air 5</option>
+                    <option value="21">21: Air 6</option>
+                </optgroup>
+            </select>
+        </div>
+        <div class="control-row">
+            <label>Red:</label>
+            <input type="range" id="red" min="0" max="255" value="255">
+            <input type="number" id="redValue" min="0" max="255" value="255">
+        </div>
+        <div class="control-row">
+            <label>Green:</label>
+            <input type="range" id="green" min="0" max="255" value="0">
+            <input type="number" id="greenValue" min="0" max="255" value="0">
+        </div>
+        <div class="control-row">
+            <label>Blue:</label>
+            <input type="range" id="blue" min="0" max="255" value="0">
+            <input type="number" id="blueValue" min="0" max="255" value="0">
+        </div>
+        <div class="control-row">
+            <label>Brightness:</label>
+            <input type="range" id="brightness" min="0" max="255" value="255">
+            <input type="number" id="brightnessValue" min="0" max="255" value="255">
+        </div>
+        <div class="control-row">
+            <label>Preview:</label>
+            <div class="color-preview" id="colorPreview"></div>
+            <button onclick="sendSingleLED()">Send to LED</button>
+            <button onclick="turnOffLED()">Turn Off</button>
+        </div>
+    </div>
+
+    <div class="control-section">
+        <h3>Preset Colors</h3>
+        <div class="preset-buttons">
+            <button onclick="sendPreset(255, 0, 0)">Red</button>
+            <button onclick="sendPreset(0, 255, 0)">Green</button>
+            <button onclick="sendPreset(0, 0, 255)">Blue</button>
+            <button onclick="sendPreset(255, 255, 0)">Yellow</button>
+            <button onclick="sendPreset(255, 0, 255)">Magenta</button>
+            <button onclick="sendPreset(0, 255, 255)">Cyan</button>
+            <button onclick="sendPreset(255, 255, 255)">White</button>
+            <button onclick="sendPreset(255, 127, 0)">Orange</button>
+            <button onclick="sendPreset(128, 0, 128)">Purple</button>
+        </div>
+    </div>
+
+    <div class="control-section">
+        <h3>Group Controls</h3>
+        <div class="control-row">
+            <button onclick="sendToAllButtons()">All Buttons (0-15)</button>
+            <button onclick="sendToAllAirSensors()">All Air Sensors (16-21)</button>
+            <button onclick="sendToAllLEDs()">All LEDs (0-21)</button>
+        </div>
+        <div class="control-row">
+            <button onclick="turnOffAllButtons()">Off Buttons</button>
+            <button onclick="turnOffAllAirSensors()">Off Air Sensors</button>
+            <button onclick="turnOffAllLEDs()">Off All LEDs</button>
+        </div>
+        <div class="control-row">
+            <button onclick="sendButtonsRainbow()">Buttons Rainbow</button>
+            <button onclick="sendAirSensorsRainbow()">Air Sensors Rainbow</button>
+            <button onclick="sendFullRainbow()">Full Rainbow</button>
+        </div>
+    </div>
+
+    <div class="control-section">
+        <h3>Test Patterns</h3>
+        <div class="control-row">
+            <button onclick="testButtonSequence()">Test Button Sequence</button>
+            <button onclick="testAirSensorSequence()">Test Air Sensor Sequence</button>
+            <button onclick="testAllSequence()">Test All Sequence</button>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isConnected = false;
+        let sequenceInterval = null;
+
+        // WebSocket connection
+        function connectWebSocket() {
+            const wsUrl = `ws://${window.location.host}/ws`;
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = function() {
+                isConnected = true;
+                updateStatus('Connected to WebSocket', true);
+            };
+            
+            ws.onclose = function() {
+                isConnected = false;
+                updateStatus('Disconnected from WebSocket', false);
+                setTimeout(connectWebSocket, 2000);
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                updateStatus('WebSocket Error', false);
+            };
+
+            ws.onmessage = function(event) {
+                console.log('Received:', event.data);
+            };
+        }
+
+        function updateStatus(message, connected) {
+            const status = document.getElementById('status');
+            const statusText = document.getElementById('statusText');
+            statusText.textContent = message;
+            status.className = connected ? 'status connected' : 'status disconnected';
+        }
+
+        // Sync sliders with number inputs
+        function syncControls() {
+            const controls = ['red', 'green', 'blue', 'brightness'];
+            controls.forEach(control => {
+                const slider = document.getElementById(control);
+                const input = document.getElementById(control + 'Value');
+                
+                slider.addEventListener('input', () => {
+                    input.value = slider.value;
+                    updateColorPreview();
+                });
+                
+                input.addEventListener('input', () => {
+                    slider.value = input.value;
+                    updateColorPreview();
+                });
+            });
+
+            // LED quick select
+            document.getElementById('ledQuickSelect').addEventListener('change', (e) => {
+                if (e.target.value) {
+                    document.getElementById('ledId').value = e.target.value;
+                }
+            });
+        }
+
+        function updateColorPreview() {
+            const r = document.getElementById('red').value;
+            const g = document.getElementById('green').value;
+            const b = document.getElementById('blue').value;
+            const brightness = document.getElementById('brightness').value / 255;
+            
+            const preview = document.getElementById('colorPreview');
+            preview.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${brightness})`;
+        }
+
+        function sendLEDPacket(ledId, on, r = 0, g = 0, b = 0, brightness = 255) {
+            if (!isConnected) {
+                alert('Not connected to WebSocket');
+                return;
+            }
+
+            const packet = {
+                device_id: "rgb-test",
+                timestamp: Date.now(),
+                events: [{
+                    Led: {
+                        Set: {
+                            led_id: parseInt(ledId),
+                            on: on,
+                            brightness: on ? parseInt(brightness) : null,
+                            rgb: on ? [parseInt(r), parseInt(g), parseInt(b)] : null
+                        }
+                    }
+                }]
+            };
+
+            ws.send(JSON.stringify(packet));
+            console.log('Sent:', packet);
+        }
+
+        function sendSingleLED() {
+            const ledId = document.getElementById('ledId').value;
+            const r = document.getElementById('red').value;
+            const g = document.getElementById('green').value;
+            const b = document.getElementById('blue').value;
+            const brightness = document.getElementById('brightness').value;
+            
+            sendLEDPacket(ledId, true, r, g, b, brightness);
+        }
+
+        function turnOffLED() {
+            const ledId = document.getElementById('ledId').value;
+            sendLEDPacket(ledId, false);
+        }
+
+        function sendPreset(r, g, b) {
+            document.getElementById('red').value = r;
+            document.getElementById('green').value = g;
+            document.getElementById('blue').value = b;
+            document.getElementById('redValue').value = r;
+            document.getElementById('greenValue').value = g;
+            document.getElementById('blueValue').value = b;
+            updateColorPreview();
+            sendSingleLED();
+        }
+
+        // Group control functions
+        function sendToAllButtons() {
+            const r = document.getElementById('red').value;
+            const g = document.getElementById('green').value;
+            const b = document.getElementById('blue').value;
+            const brightness = document.getElementById('brightness').value;
+            
+            for (let i = 0; i < 16; i++) {
+                sendLEDPacket(i, true, r, g, b, brightness);
+            }
+        }
+
+        function sendToAllAirSensors() {
+            const r = document.getElementById('red').value;
+            const g = document.getElementById('green').value;
+            const b = document.getElementById('blue').value;
+            const brightness = document.getElementById('brightness').value;
+            
+            for (let i = 16; i < 22; i++) {
+                sendLEDPacket(i, true, r, g, b, brightness);
+            }
+        }
+
+        function sendToAllLEDs() {
+            const r = document.getElementById('red').value;
+            const g = document.getElementById('green').value;
+            const b = document.getElementById('blue').value;
+            const brightness = document.getElementById('brightness').value;
+            
+            for (let i = 0; i < 22; i++) {
+                sendLEDPacket(i, true, r, g, b, brightness);
+            }
+        }
+
+        function turnOffAllButtons() {
+            for (let i = 0; i < 16; i++) {
+                sendLEDPacket(i, false);
+            }
+        }
+
+        function turnOffAllAirSensors() {
+            for (let i = 16; i < 22; i++) {
+                sendLEDPacket(i, false);
+            }
+        }
+
+        function turnOffAllLEDs() {
+            for (let i = 0; i < 22; i++) {
+                sendLEDPacket(i, false);
+            }
+        }
+
+        // Rainbow functions
+        function sendButtonsRainbow() {
+            const colors = [
+                [255, 0, 0], [255, 32, 0], [255, 64, 0], [255, 96, 0],
+                [255, 128, 0], [255, 160, 0], [255, 192, 0], [255, 224, 0],
+                [255, 255, 0], [192, 255, 0], [128, 255, 0], [64, 255, 0],
+                [0, 255, 0], [0, 255, 128], [0, 255, 255], [0, 128, 255]
+            ];
+            
+            for (let i = 0; i < 16; i++) {
+                const [r, g, b] = colors[i];
+                sendLEDPacket(i, true, r, g, b, 255);
+            }
+        }
+
+        function sendAirSensorsRainbow() {
+            const colors = [
+                [255, 0, 0], [255, 127, 0], [255, 255, 0], 
+                [0, 255, 0], [0, 0, 255], [128, 0, 128]
+            ];
+            
+            for (let i = 0; i < 6; i++) {
+                const [r, g, b] = colors[i];
+                sendLEDPacket(i + 16, true, r, g, b, 255);
+            }
+        }
+
+        function sendFullRainbow() {
+            sendButtonsRainbow();
+            setTimeout(() => sendAirSensorsRainbow(), 100);
+        }
+
+        // Test sequences
+        function testButtonSequence() {
+            if (sequenceInterval) clearInterval(sequenceInterval);
+            
+            let index = 0;
+            sequenceInterval = setInterval(() => {
+                // Turn off previous
+                if (index > 0) {
+                    sendLEDPacket(index - 1, false);
+                } else if (index === 0) {
+                    sendLEDPacket(15, false);
+                }
+                
+                // Turn on current
+                sendLEDPacket(index, true, 255, 255, 255, 255);
+                
+                index = (index + 1) % 16;
+                
+                if (index === 0) {
+                    clearInterval(sequenceInterval);
+                    setTimeout(() => sendLEDPacket(15, false), 300);
+                }
+            }, 200);
+        }
+
+        function testAirSensorSequence() {
+            if (sequenceInterval) clearInterval(sequenceInterval);
+            
+            let index = 0;
+            sequenceInterval = setInterval(() => {
+                // Turn off previous
+                if (index > 0) {
+                    sendLEDPacket(15 + index, false);
+                } else if (index === 0) {
+                    sendLEDPacket(21, false);
+                }
+                
+                // Turn on current
+                sendLEDPacket(16 + index, true, 0, 255, 255, 255);
+                
+                index = (index + 1) % 6;
+                
+                if (index === 0) {
+                    clearInterval(sequenceInterval);
+                    setTimeout(() => sendLEDPacket(21, false), 300);
+                }
+            }, 300);
+        }
+
+        function testAllSequence() {
+            testButtonSequence();
+            setTimeout(() => {
+                testAirSensorSequence();
+            }, 16 * 200 + 500); // Wait for button sequence to finish
+        }
+
+        // Initialize
+        window.addEventListener('load', function() {
+            connectWebSocket();
+            syncControls();
+            updateColorPreview();
+        });
+    </script>
+</body>
+</html>

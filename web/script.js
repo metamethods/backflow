@@ -135,12 +135,22 @@ class WebSocketHandler {
   }
 
   getCellByLedId(ledId) {
-    // Map LED IDs to grid cells
-    // For chunithm, we have 6 air sensors (1-6) and 16 slider keys (q,w,e,r,t,y,u,i,o,p,a,s,d,f,g,h)
-    const cells = document.querySelectorAll('.grid-cell');
-    if (ledId >= 0 && ledId < cells.length) {
-      return cells[ledId];
+    // Map LED IDs to grid cells with buttons first, air sensors last
+    // LED IDs 0-15: Slider buttons (16 keys: q,w,e,r,t,y,u,i,o,p,a,s,d,f,g,h)
+    // LED IDs 16-21: Air sensors (6 sensors: 1,2,3,4,5,6)
+    
+    const airSensors = document.querySelectorAll('[data-cell-section="air-sensor"] .grid-cell');
+    const sliderButtons = document.querySelectorAll('[data-cell-section="slider"] .grid-cell');
+    
+    if (ledId >= 0 && ledId < 16) {
+      // Slider buttons (LED IDs 0-15)
+      return sliderButtons[ledId] || null;
+    } else if (ledId >= 16 && ledId < 22) {
+      // Air sensors (LED IDs 16-21)
+      const airIndex = ledId - 16;
+      return airSensors[airIndex] || null;
     }
+    
     return null;
   }
 
