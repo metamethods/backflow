@@ -467,7 +467,7 @@ mod tests {
         }));
 
         // Send the feedback packet
-        feedback_stream.send(feedback_packet)?;
+        feedback_stream.send(feedback_packet).await?;
         info!("Test feedback packet sent successfully");
 
         Ok(())
@@ -761,7 +761,7 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
                                 packet.events.len()
                             );
 
-                            if let Err(e) = input_stream.send(packet) {
+                            if let Err(e) = input_stream.send(packet).await {
                                 error!("Failed to send input event to stream: {}", e);
                             }
                         }
@@ -778,7 +778,7 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
 
                             // Instead of broadcasting directly here, send it through the main feedback stream
                             // This ensures all feedback goes through the same unified broadcast mechanism
-                            if let Err(e) = feedback_stream_for_client.send(feedback_packet) {
+                            if let Err(e) = feedback_stream_for_client.send(feedback_packet).await {
                                 error!("Failed to send client feedback to main stream: {}", e);
                             } else {
                                 debug!(

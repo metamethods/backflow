@@ -3,8 +3,6 @@
 //! to the HID device, such as LED control, haptics, etc.
 //!
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use tokio::sync::mpsc;
 
 pub mod generators;
 pub mod websocket;
@@ -188,27 +186,27 @@ impl FeedbackEventPacket {
 #[derive(Clone)]
 pub struct FeedbackEventStream {
     /// Sender for feedback event packets.
-    pub tx: mpsc::UnboundedSender<FeedbackEventPacket>,
+    pub tx: tokio::sync::mpsc::Sender<FeedbackEventPacket>,
     /// Receiver for feedback event packets.
-    pub rx: Arc<tokio::sync::Mutex<mpsc::UnboundedReceiver<FeedbackEventPacket>>>,
+    pub rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<FeedbackEventPacket>>>,
 }
 
 impl FeedbackEventStream {
     /// Creates a new `FeedbackEventStream` with a tokio mpsc channel.
     pub fn new() -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = tokio::sync::mpsc::channel(100);
         Self {
             tx,
-            rx: Arc::new(tokio::sync::Mutex::new(rx)),
+            rx: std::sync::Arc::new(tokio::sync::Mutex::new(rx)),
         }
     }
 
     /// Sends a feedback event packet through the stream.
-    pub fn send(
+    pub async fn send(
         &self,
         packet: FeedbackEventPacket,
-    ) -> Result<(), mpsc::error::SendError<FeedbackEventPacket>> {
-        self.tx.send(packet)
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<FeedbackEventPacket>> {
+        self.tx.send(packet).await
     }
 
     /// Receives a feedback event packet from the stream.
@@ -297,7 +295,7 @@ mod tests {
             rgb: Some((255, 0, 0)),
         }));
 
-        stream.send(packet.clone()).unwrap();
+        stream.send(packet.clone()).await.unwrap();
         let received = stream.receive().await.unwrap();
         assert_eq!(received.device_id, "dev");
         assert_eq!(received.events.len(), 1);

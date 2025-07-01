@@ -598,34 +598,40 @@ impl ChuniRgbService {
             packet.led_count()
         );
 
-        // Only process slider packets for now (board 2)
-        if packet.board == 2 {
-            let events = self.generate_slider_feedback_events(packet)?;
+        let (device_id, events) = match packet.board {
+            0 => ("chunithm_billboard_left".to_string(), self.generate_billboard_feedback_events(packet, 0)?),
+            1 => ("chunithm_billboard_right".to_string(), self.generate_billboard_feedback_events(packet, 1)?),
+            2 => ("chunithm_slider".to_string(), self.generate_slider_feedback_events(packet)?),
+            _ => {
+                tracing::warn!("Unknown board ID {}, skipping packet", packet.board);
+                return Ok(());
+            }
+        };
 
-            // Send all LED events in one packet - this is more efficient for the web UI
-            // which can batch process all the LED updates at once
-            if !events.is_empty() {
-                let event_count = events.len();
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_millis() as u64;
+        // Send all LED events in one packet - this is more efficient for the web UI
+        // which can batch process all the LED updates at once
+        if !events.is_empty() {
+            let event_count = events.len();
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64;
 
-                let feedback_packet = crate::feedback::FeedbackEventPacket {
-                    device_id: "chunithm_slider".to_string(),
-                    timestamp,
-                    events, // Send all LED events together for better performance
-                };
+            let feedback_packet = crate::feedback::FeedbackEventPacket {
+                device_id,
+                timestamp,
+                events, // Send all LED events together for better performance
+            };
 
-                if let Err(e) = self.feedback_stream.send(feedback_packet) {
-                    tracing::error!("Failed to send feedback packet: {}", e);
-                } else {
-                    tracing::trace!(
-                        target: crate::PACKET_PROCESSING_TARGET,
-                        "Successfully sent feedback packet with {} LED events",
-                        event_count
-                    );
-                }
+            if let Err(e) = self.feedback_stream.send(feedback_packet).await {
+                tracing::error!("Failed to send feedback packet: {}", e);
+            } else {
+                tracing::trace!(
+                    target: crate::PACKET_PROCESSING_TARGET,
+                    "Successfully sent feedback packet with {} LED events for board {}",
+                    event_count,
+                    packet.board
+                );
             }
         }
 
@@ -664,12 +670,58 @@ impl ChuniRgbService {
 
             tracing::trace!(
                 target: crate::PACKET_PROCESSING_TARGET,
-                "Generated {} LED feedback events for slider (clamped to {} lights, offset by {}) - sending as single packet for better web UI performance",
+                "Generated {} LED feedback events for slider (clamped from {} to {} lights, LED ID offset: {})",
                 events.len(),
+                31,
                 self.config.slider_clamp_lights,
                 self.config.slider_id_offset
             );
         }
+
+        Ok(events)
+    }
+
+    /// Generate feedback events for billboard LED data
+    fn generate_billboard_feedback_events(
+        &self,
+        packet: &ChuniLedDataPacket,
+        board_id: u8,
+    ) -> eyre::Result<Vec<FeedbackEvent>> {
+        let mut events = Vec::new();
+
+        let leds = match &packet.data {
+            LedBoardData::BillboardLeft(leds) => leds.as_slice(),
+            LedBoardData::BillboardRight(leds) => leds.as_slice(),
+            LedBoardData::Slider(_) => {
+                return Err(eyre::eyre!("Expected billboard data, got slider data"));
+            }
+        };
+
+        // Generate LED events with board-specific ID offset
+        let id_offset = match board_id {
+            0 => 0,    // Billboard left starts at LED ID 0
+            1 => 100,  // Billboard right starts at LED ID 100
+            _ => return Err(eyre::eyre!("Invalid billboard board ID: {}", board_id)),
+        };
+
+        for (index, rgb) in leds.iter().enumerate() {
+            let led_id = (index + id_offset) as u8;
+
+            events.push(FeedbackEvent::Led(crate::feedback::LedEvent::Set {
+                led_id,
+                on: rgb.r > 0 || rgb.g > 0 || rgb.b > 0,
+                brightness: Some(rgb.r.max(rgb.g).max(rgb.b)),
+                rgb: Some((rgb.r, rgb.g, rgb.b)),
+            }));
+        }
+
+        tracing::trace!(
+            target: crate::PACKET_PROCESSING_TARGET,
+            "Generated {} LED feedback events for billboard board {} (LED ID offset: {})",
+            events.len(),
+            board_id,
+            id_offset
+        );
 
         Ok(events)
     }
