@@ -136,7 +136,7 @@ impl DeviceFilter {
     // }
 
     /// Check if a key string appears to be a standard evdev key code
-    fn is_standard_evdev_key(key: &str) -> bool {
+    pub fn is_standard_evdev_key(key: &str) -> bool {
         // Standard evdev keys typically start with KEY_, BTN_, etc.
         key.starts_with("KEY_")
             || key.starts_with("BTN_")

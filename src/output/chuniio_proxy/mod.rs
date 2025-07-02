@@ -574,10 +574,10 @@ impl InternalChuniioProxyServer {
             match ChuniMessage::from_reader(&mut reader).await {
                 Ok(message) => {
                     // Log all incoming packets except JvsPoll and CoinCounterRead for debugging
-                    match &message {
-                        ChuniMessage::JvsPoll | ChuniMessage::CoinCounterRead => {}
-                        _ => info!("Client {} received packet: {:?}", client_id, message),
-                    }
+                    // match &message {
+                    //     ChuniMessage::JvsPoll | ChuniMessage::CoinCounterRead => {}
+                    //     _ => info!("Client {} received packet: {:?}", client_id, message),
+                    // }
 
                     match Self::handle_client_message(
                         client_id,
@@ -605,7 +605,7 @@ impl InternalChuniioProxyServer {
                         }
                         Ok(None) => {
                             // No response needed
-                            info!("Client {} no response needed for packet", client_id);
+                            // info!("Client {} no response needed for packet", client_id);
                         }
                         Err(e) => {
                             warn!("Error handling message from client {}: {}", client_id, e);
@@ -715,32 +715,43 @@ impl InternalChuniioProxyServer {
                     events: Vec::new(),
                 };
 
-                // Convert RGB data to individual LED events (every 3 bytes = B,G,R in chuniio format)
-                // For slider board, apply clamping if configured
-                let max_leds = feedback_config
+                // Reverse the order of 3-byte LED blocks
+                let mut led_blocks: Vec<&[u8]> = rgb_data.chunks(3).collect();
+                led_blocks.reverse();
+                let total_leds = led_blocks.len();
+                let clamp_leds = feedback_config
                     .as_ref()
                     .map(|config| config.slider_clamp_lights as usize)
-                    .unwrap_or(rgb_data.len() / 3);
-
+                    .unwrap_or(total_leds);
                 let led_offset = feedback_config
                     .as_ref()
                     .map(|config| config.slider_id_offset as u8)
                     .unwrap_or(0);
 
-                for (led_index, bgr_chunk) in rgb_data.chunks(3).enumerate().take(max_leds) {
-                    if bgr_chunk.len() == 3 {
-                        let b = bgr_chunk[0]; // Blue comes first
-                        let g = bgr_chunk[1]; // Green comes second  
-                        let r = bgr_chunk[2]; // Red comes third
+                // If clamping, only take every other LED (matching chuni_jvs)
+                let led_indices: Vec<usize> = if clamp_leds < total_leds {
+                    (0..clamp_leds)
+                        .map(|i| i * 2)
+                        .filter(|&i| i < total_leds)
+                        .collect()
+                } else {
+                    (0..total_leds).collect()
+                };
 
-                        let led_event = FeedbackEvent::Led(LedEvent::Set {
-                            led_id: led_offset + led_index as u8,
-                            on: r > 0 || g > 0 || b > 0,
-                            brightness: Some(((r as u16 + g as u16 + b as u16) / 3) as u8),
-                            rgb: Some((r, g, b)), // Store as (R, G, B) tuple
-                        });
-
-                        packet.events.push(led_event);
+                for (out_idx, &led_index) in led_indices.iter().enumerate() {
+                    if let Some(bgr_chunk) = led_blocks.get(led_index) {
+                        if bgr_chunk.len() == 3 {
+                            let r = bgr_chunk[2];
+                            let g = bgr_chunk[0];
+                            let b = bgr_chunk[1];
+                            let led_event = FeedbackEvent::Led(LedEvent::Set {
+                                led_id: led_offset + out_idx as u8,
+                                on: r > 0 || g > 0 || b > 0,
+                                brightness: Some(((r as u16 + g as u16 + b as u16) / 3) as u8),
+                                rgb: Some((r, g, b)),
+                            });
+                            packet.events.push(led_event);
+                        }
                     }
                 }
 
@@ -760,16 +771,17 @@ impl InternalChuniioProxyServer {
             ChuniMessage::LedUpdate { board, rgb_data } => {
                 // Only process board 2 (slider) - ignore other boards
                 if board != 2 {
-                    debug!("Ignoring LED update for non-slider board {}", board);
+                    // debug!("Ignoring LED update for non-slider board {}", board);
                     return Ok(Some(ChuniMessage::Pong));
                 }
 
-                debug!(
-                    "Client {} LED board update: board={}, {} bytes",
-                    client_id,
-                    board,
-                    rgb_data.len()
-                );
+                // debug!(
+                //     target: crate::
+                //     "Client {} LED board update: board={}, {} bytes",
+                //     client_id,
+                //     board,
+                //     rgb_data.len()
+                // );
 
                 // Route to feedback system (only board 2 = slider)
                 let timestamp = std::time::SystemTime::now()
@@ -784,32 +796,48 @@ impl InternalChuniioProxyServer {
                     events: Vec::new(),
                 };
 
-                // Convert RGB data to individual LED events (every 3 bytes = B,G,R in chuniio format)
-                // Apply slider clamping for board 2
-                let max_leds = feedback_config
+                // Reverse the order of 3-byte LED blocks
+                let mut led_blocks: Vec<&[u8]> = rgb_data.chunks(3).collect();
+                led_blocks.reverse();
+                let total_leds = led_blocks.len();
+                let clamp_leds = feedback_config
                     .as_ref()
                     .map(|config| config.slider_clamp_lights as usize)
-                    .unwrap_or(rgb_data.len() / 3);
-
+                    .unwrap_or(total_leds);
                 let led_offset = feedback_config
                     .as_ref()
                     .map(|config| config.slider_id_offset as u8)
                     .unwrap_or(0);
 
-                for (led_index, bgr_chunk) in rgb_data.chunks(3).enumerate().take(max_leds) {
-                    if bgr_chunk.len() == 3 {
-                        let b = bgr_chunk[0]; // Blue comes first
-                        let g = bgr_chunk[1]; // Green comes second  
-                        let r = bgr_chunk[2]; // Red comes third
+                // If clamping, only take every other LED (matching chuni_jvs)
+                let led_indices: Vec<usize> = if clamp_leds < total_leds {
+                    (0..clamp_leds)
+                        .map(|i| i * 2)
+                        .filter(|&i| i < total_leds)
+                        .collect()
+                } else {
+                    (0..total_leds).collect()
+                };
 
-                        let led_event = FeedbackEvent::Led(LedEvent::Set {
-                            led_id: led_offset + led_index as u8,
-                            on: r > 0 || g > 0 || b > 0,
-                            brightness: Some(((r as u16 + g as u16 + b as u16) / 3) as u8),
-                            rgb: Some((r, g, b)), // Store as (R, G, B) tuple
-                        });
+                for (out_idx, &led_index) in led_indices.iter().enumerate() {
+                    if let Some(brg_chunk) = led_blocks.get(led_index) {
+                        if brg_chunk.len() == 3 {
+                            let r = brg_chunk[1];
+                            let g = brg_chunk[2];
+                            let b = brg_chunk[0];
+                            let led_event = FeedbackEvent::Led(LedEvent::Set {
+                                led_id: led_offset + out_idx as u8,
+                                on: r > 0 || g > 0 || b > 0,
+                                brightness: if r > 0 || g > 0 || b > 0 {
+                                    Some(255)
+                                } else {
+                                    Some(0)
+                                },
+                                rgb: Some((r, g, b)), // Store as (R, G, B) tuple
+                            });
 
-                        packet.events.push(led_event);
+                            packet.events.push(led_event);
+                        }
                     }
                 }
 
@@ -819,15 +847,15 @@ impl InternalChuniioProxyServer {
                     if let Err(e) = main_feedback_stream.send(packet).await {
                         warn!("Failed to send LED board {} feedback packet: {}", board, e);
                     } else {
-                        debug!(
-                            "Sent LED board {} feedback with {} LEDs",
-                            board, event_count
-                        );
+                        // debug!(
+                        //     "Sent LED board {} feedback with {} LEDs",
+                        //     board, event_count
+                        // );
                     }
                 }
 
                 // Send immediate ACK to prevent game from waiting
-                Ok(Some(ChuniMessage::Pong))
+                Ok(None)
             }
             ChuniMessage::Ping => {
                 info!("Client {} ping received, sending pong", client_id);

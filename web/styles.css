@@ -62,7 +62,7 @@ body {
 
 /* Add visual indicators for different cell types */
 .grid-cell[data-key]:after {
-    content: attr(data-key);
+    /* content: attr(data-key); */
     position: absolute;
     top: 50%;
     left: 50%;

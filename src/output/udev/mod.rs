@@ -232,8 +232,8 @@ impl UdevOutput {
             KeyboardEvent::KeyRelease { key } => key,
         };
 
-        if key.starts_with("CHUNIIO_") {
-            tracing::debug!("Skipping CHUNIIO_ prefixed key in udev backend: {}", key);
+        if !crate::device_filter::DeviceFilter::is_standard_evdev_key(key) {
+            tracing::debug!("Skipping non-standard evdev key in udev backend: {}", key);
             return Ok(());
         }
 

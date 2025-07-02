@@ -552,8 +552,8 @@ class GridController {
       return "KEY_UNKNOWN";
     }
 
-    // Convert the data-key to Linux key code format
-    return this.convertToLinuxKeyCode(dataKey);
+    // Convert the data-key to final key code format
+    return dataKey;
   }
 
   // Update the touch counter display
@@ -593,53 +593,6 @@ class GridController {
     this.feedbackHandler.resetAll();
     this.updateTouchCounter();
     console.log("Touch state reset");
-  }
-
-  // Convert data-key attribute to Linux key code format
-  convertToLinuxKeyCode(dataKey) {
-    // Handle special cases first
-    const specialKeys = {
-      Backspace: "KEY_BACKSPACE",
-      Tab: "KEY_TAB",
-      Enter: "KEY_ENTER",
-      CapsLock: "KEY_CAPSLOCK",
-      ShiftLeft: "KEY_LEFTSHIFT",
-      ShiftRight: "KEY_RIGHTSHIFT",
-      ControlLeft: "KEY_LEFTCTRL",
-      ControlRight: "KEY_RIGHTCTRL",
-      AltLeft: "KEY_LEFTALT",
-      AltRight: "KEY_RIGHTALT",
-      " ": "KEY_SPACE",
-      "`": "KEY_GRAVE",
-      "-": "KEY_MINUS",
-      "=": "KEY_EQUAL",
-      "[": "KEY_LEFTBRACE",
-      "]": "KEY_RIGHTBRACE",
-      "\\": "KEY_BACKSLASH",
-      ";": "KEY_SEMICOLON",
-      "'": "KEY_APOSTROPHE",
-      ",": "KEY_COMMA",
-      ".": "KEY_DOT",
-      "/": "KEY_SLASH",
-    };
-
-    if (specialKeys[dataKey]) {
-      return specialKeys[dataKey];
-    }
-
-    // Handle numbers 0-9
-    if (/^[0-9]$/.test(dataKey)) {
-      return `KEY_${dataKey}`;
-    }
-
-    // Handle letters a-z (convert to uppercase for key codes)
-    if (/^[a-zA-Z]$/.test(dataKey)) {
-      return `KEY_${dataKey.toUpperCase()}`;
-    }
-
-    // If we don't recognize it, return as-is with KEY_ prefix
-    console.warn("Unknown key mapping for:", dataKey);
-    return `KEY_${dataKey.toUpperCase()}`;
   }
 
   // Get device name based on cell's section
