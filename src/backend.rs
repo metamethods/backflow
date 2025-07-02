@@ -173,7 +173,7 @@ impl Backend {
     /// Start output services based on configuration
     async fn start_output_services(
         &mut self,
-        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
+        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>, // switched to bounded Sender
     ) -> Result<()> {
         if self.config.output.uinput.enabled {
             tracing::info!("Starting uinput output backend");
@@ -234,7 +234,7 @@ impl Backend {
     /// Start feedback services based on configuration
     async fn start_feedback_services(
         &mut self,
-        led_packet_rx: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
+        led_packet_rx: mpsc::Receiver<ChuniLedDataPacket>, // switched to bounded Receiver
     ) -> Result<()> {
         // Check if chuniio_proxy is enabled
         let chuniio_proxy_enabled = self

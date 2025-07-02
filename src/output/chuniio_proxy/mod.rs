@@ -107,7 +107,7 @@ pub struct ChuniioProxyServer {
     next_client_id: Arc<RwLock<u64>>,
     input_stream: InputEventStream,
     feedback_stream: FeedbackEventStream,
-    led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
+    led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
 }
 
 impl ChuniioProxyServer {
@@ -116,7 +116,7 @@ impl ChuniioProxyServer {
         socket_path: Option<PathBuf>,
         input_stream: InputEventStream,
         feedback_stream: FeedbackEventStream,
-        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
+        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
     ) -> Self {
         let socket_path = socket_path.unwrap_or_else(|| {
             // Try to use user runtime directory, fallback to /tmp
@@ -250,7 +250,7 @@ impl ChuniioProxyServer {
         feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         next_client_id: Arc<RwLock<u64>>,
-        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
+        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
     ) -> InternalChuniioProxyServer {
         InternalChuniioProxyServer {
             socket_path,
@@ -373,7 +373,7 @@ struct InternalChuniioProxyServer {
     next_client_id: Arc<RwLock<u64>>,
     input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
     feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
-    led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
+    led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
 }
 
 impl InternalChuniioProxyServer {
@@ -384,7 +384,7 @@ impl InternalChuniioProxyServer {
         next_client_id: Arc<RwLock<u64>>,
         input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
         feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
-        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
+        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
     ) -> Self {
         Self {
             socket_path,
@@ -465,7 +465,7 @@ impl InternalChuniioProxyServer {
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
         _feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
-        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
+        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(
             "Client {} connected and starting packet processing",
@@ -477,8 +477,8 @@ impl InternalChuniioProxyServer {
         let writer = Arc::new(tokio::sync::Mutex::new(writer));
 
         // Channel for receiving feedback events to send to this client
-        let (client_feedback_tx, mut client_feedback_rx) =
-            mpsc::unbounded_channel::<ChuniFeedbackEvent>();
+        let (_client_feedback_tx, mut client_feedback_rx) =
+            mpsc::channel::<ChuniFeedbackEvent>(100);
 
         // Spawn task to handle outgoing feedback messages
         let writer_clone = Arc::clone(&writer);
@@ -574,7 +574,7 @@ impl InternalChuniioProxyServer {
         protocol_state: &Arc<RwLock<ChuniProtocolState>>,
         input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
         _feedback_tx: &mpsc::UnboundedSender<ChuniFeedbackEvent>,
-        led_packet_tx: &mpsc::UnboundedSender<ChuniLedDataPacket>,
+        led_packet_tx: &mpsc::Sender<ChuniLedDataPacket>,
     ) -> Result<Option<ChuniMessage>, Box<dyn std::error::Error + Send + Sync>> {
         match message {
             ChuniMessage::JvsPoll => {
@@ -663,7 +663,7 @@ impl InternalChuniioProxyServer {
                 if rgb_values.len() == 31 {
                     let data = LedBoardData::Slider(rgb_values.try_into().unwrap());
                     let packet = ChuniLedDataPacket { board, data };
-                    if let Err(e) = led_packet_tx.send(packet) {
+                    if let Err(e) = led_packet_tx.try_send(packet) {
                         warn!("Failed to send slider LED packet: {}", e);
                     }
                 } else {
@@ -752,7 +752,7 @@ impl InternalChuniioProxyServer {
                 };
 
                 let packet = ChuniLedDataPacket { board, data };
-                if let Err(e) = led_packet_tx.send(packet) {
+                if let Err(e) = led_packet_tx.try_send(packet) {
                     warn!("Failed to send LED board {} packet: {}", board, e);
                 }
 
@@ -834,7 +834,7 @@ mod tests {
     async fn test_server_creation() {
         let input_stream = InputEventStream::new();
         let feedback_stream = FeedbackEventStream::new();
-        let (led_packet_tx, _led_packet_rx) = mpsc::unbounded_channel::<ChuniLedDataPacket>();
+        let (led_packet_tx, _led_packet_rx) = mpsc::channel::<ChuniLedDataPacket>(16);
         let server = ChuniioProxyServer::new(
             Some(PathBuf::from("/tmp/test_chuniio.sock")),
             input_stream,

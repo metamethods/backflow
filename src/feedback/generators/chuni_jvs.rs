@@ -292,25 +292,22 @@ impl ChuniLedDataPacket {
 
 /// Create a new channel for sending CHUNITHM LED data packets.
 pub fn create_chuni_led_channel() -> (
-    mpsc::UnboundedSender<ChuniLedDataPacket>,
-    mpsc::UnboundedReceiver<ChuniLedDataPacket>,
+    mpsc::Sender<ChuniLedDataPacket>,
+    mpsc::Receiver<ChuniLedDataPacket>,
 ) {
-    mpsc::unbounded_channel()
+    mpsc::channel(100)
 }
 
 /// CHUNITHM JVS reader service that listens on a Unix domain socket,
 /// parses JVS-like LED data packets, and sends them to a channel.
 pub struct ChuniJvsReader {
     socket_path: PathBuf,
-    packet_sender: mpsc::UnboundedSender<ChuniLedDataPacket>,
+    packet_sender: mpsc::Sender<ChuniLedDataPacket>,
 }
 
 impl ChuniJvsReader {
     /// Create a new CHUNITHM JVS reader service.
-    pub fn new(
-        socket_path: PathBuf,
-        packet_sender: mpsc::UnboundedSender<ChuniLedDataPacket>,
-    ) -> Self {
+    pub fn new(socket_path: PathBuf, packet_sender: mpsc::Sender<ChuniLedDataPacket>) -> Self {
         Self {
             socket_path,
             packet_sender,
@@ -346,7 +343,7 @@ impl ChuniJvsReader {
                             Ok(n) => match parser.parse_packets(&buf[..n]) {
                                 Ok(packets) => {
                                     for packet in packets {
-                                        if let Err(e) = self.packet_sender.send(packet) {
+                                        if let Err(e) = self.packet_sender.try_send(packet) {
                                             warn!("Failed to send LED packet: {}", e);
                                         }
                                     }
@@ -469,7 +466,7 @@ impl Default for ChuniLedParser {
 pub async fn run_chuniio_service(
     config: ChuniIoRgbConfig,
     feedback_stream: crate::feedback::FeedbackEventStream,
-    packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
+    packet_receiver: mpsc::Receiver<ChuniLedDataPacket>,
 ) -> eyre::Result<()> {
     let mut service = ChuniRgbService::new(config, feedback_stream, packet_receiver);
     service.run().await
@@ -577,7 +574,7 @@ mod tests {
 pub struct ChuniRgbService {
     config: ChuniIoRgbConfig,
     feedback_stream: crate::feedback::FeedbackEventStream,
-    packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
+    packet_receiver: mpsc::Receiver<ChuniLedDataPacket>,
 }
 
 impl ChuniRgbService {
@@ -585,7 +582,7 @@ impl ChuniRgbService {
     pub fn new(
         config: ChuniIoRgbConfig,
         feedback_stream: crate::feedback::FeedbackEventStream,
-        packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
+        packet_receiver: mpsc::Receiver<ChuniLedDataPacket>,
     ) -> Self {
         Self {
             config,
