@@ -814,18 +814,6 @@ impl InternalChuniioProxyServer {
     }
 }
 
-/// Helper function to create channels for the proxy server
-pub fn create_chuniio_channels() -> (
-    mpsc::UnboundedSender<ChuniInputEvent>,
-    mpsc::UnboundedReceiver<ChuniInputEvent>,
-    mpsc::UnboundedSender<ChuniFeedbackEvent>,
-    mpsc::UnboundedReceiver<ChuniFeedbackEvent>,
-) {
-    let (input_tx, input_rx) = mpsc::unbounded_channel();
-    let (feedback_tx, feedback_rx) = mpsc::unbounded_channel();
-    (input_tx, input_rx, feedback_tx, feedback_rx)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
