@@ -79,6 +79,8 @@ fn default_web_enabled() -> Option<WebBackend> {
 pub struct OutputConfig {
     #[serde(default)]
     pub uinput: UInputConfig,
+    #[serde(default)]
+    pub chuniio_proxy: Option<ChuniioProxyConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -192,6 +194,46 @@ impl Default for DeviceConfig {
         }
     }
 }
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ChuniioProxyConfig {
+    #[serde(default = "default_chuniio_proxy_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_chuniio_proxy_socket_path")]
+    pub socket_path: PathBuf,
+}
+
+impl Default for ChuniioProxyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            socket_path: default_chuniio_proxy_socket_path(),
+        }
+    }
+}
+
+fn default_chuniio_proxy_enabled() -> bool {
+    false
+}
+
+fn default_chuniio_proxy_socket_path() -> PathBuf {
+    use std::env;
+    // Check environment variable first
+    if let Ok(env_path) = env::var("CHUNIIO_PROXY_SOCKET") {
+        return PathBuf::from(env_path);
+    }
+    // Try to use user runtime directory, fallback to /tmp
+    if let Ok(uid) = env::var("UID") {
+        let runtime_path = format!("/run/user/{}/backflow_chuniio.sock", uid);
+        if std::path::Path::new(&format!("/run/user/{}", uid)).exists() {
+            PathBuf::from(runtime_path)
+        } else {
+            PathBuf::from("/tmp/backflow_chuniio.sock")
+        }
+    } else {
+        PathBuf::from("/tmp/backflow_chuniio.sock")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

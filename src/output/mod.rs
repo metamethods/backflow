@@ -1,8 +1,10 @@
+pub mod chuniio_proxy;
 pub mod dummy;
 pub mod plumber_dbus;
 pub mod udev;
 
 // Re-export the concrete types for external use
+pub use chuniio_proxy::ChuniioProxyServer;
 pub use dummy::DummyOutput;
 pub use plumber_dbus::DbusPlumberOutput;
 pub use udev::UdevOutput;
@@ -22,6 +24,7 @@ pub enum OutputBackendType {
     Dummy(DummyOutput),
     Dbus(DbusPlumberOutput),
     Udev(UdevOutput),
+    ChuniioProxy(ChuniioProxyServer),
 }
 
 impl OutputBackend for OutputBackendType {
@@ -30,6 +33,7 @@ impl OutputBackend for OutputBackendType {
             OutputBackendType::Dummy(backend) => backend.run().await,
             OutputBackendType::Dbus(backend) => backend.run().await,
             OutputBackendType::Udev(backend) => backend.run().await,
+            OutputBackendType::ChuniioProxy(backend) => backend.run().await,
         }
     }
 
@@ -38,6 +42,7 @@ impl OutputBackend for OutputBackendType {
             OutputBackendType::Dummy(backend) => backend.stop().await,
             OutputBackendType::Dbus(backend) => backend.stop().await,
             OutputBackendType::Udev(backend) => backend.stop().await,
+            OutputBackendType::ChuniioProxy(backend) => backend.stop().await,
         }
     }
 }

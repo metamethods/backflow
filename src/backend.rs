@@ -117,7 +117,8 @@ impl Backend {
             let socket_path = unix_config.path.clone();
             let handle = tokio::spawn(async move {
                 use crate::input::unix_socket::UnixSocketServer;
-                let mut unix_backend = UnixSocketServer::new(socket_path, input_stream, feedback_stream);
+                let mut unix_backend =
+                    UnixSocketServer::new(socket_path, input_stream, feedback_stream);
                 if let Err(e) = unix_backend.run().await {
                     tracing::error!("Unix socket backend error: {}", e);
                 }
@@ -183,7 +184,39 @@ impl Backend {
 
             self.output_handle = Some(handle);
         } else {
-            tracing::info!("Output backend is disabled");
+            tracing::info!("Uinput output backend is disabled");
+        }
+
+        // Start chuniio proxy backend if configured and enabled
+        if let Some(chuniio_config) = &self.config.output.chuniio_proxy {
+            if chuniio_config.enabled {
+                tracing::info!(
+                    "Starting chuniio proxy output backend on socket: {:?}",
+                    chuniio_config.socket_path
+                );
+
+                let input_stream = self.streams.transformed_input.clone();
+                let feedback_stream = self.streams.feedback.clone();
+                let socket_path = chuniio_config.socket_path.clone();
+
+                let handle = tokio::spawn(async move {
+                    let mut output = OutputBackendType::ChuniioProxy(
+                        crate::output::chuniio_proxy::ChuniioProxyServer::new(
+                            Some(socket_path),
+                            input_stream,
+                            feedback_stream,
+                        ),
+                    );
+
+                    if let Err(e) = output.run().await {
+                        tracing::error!("Chuniio proxy backend error: {}", e);
+                    }
+                });
+
+                self.output_handle = Some(handle);
+            } else {
+                tracing::info!("Chuniio proxy output backend is disabled");
+            }
         }
 
         Ok(())

@@ -4,6 +4,7 @@ mod device_filter;
 mod feedback;
 mod input;
 mod output;
+mod protos;
 use eyre::Result;
 
 pub const PACKET_PROCESSING_TARGET: &str = "backflow::websocket::rgb";

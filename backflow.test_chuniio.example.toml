@@ -1,0 +1,25 @@
+# Test configuration to verify chuniio proxy integration
+[app]
+log_level = "debug"
+
+# Enable web interface for testing
+[input.web_backend]
+enabled = true
+host = "127.0.0.1"
+port = 8080
+
+# Enable chuniio proxy output backend
+# You still require a chuniio.dll implementation that proxies
+# all requests to this socket.
+# The chuniio proxy here simply acts as the actual server for all JVS calls, passing them
+# to Linux and escaping Wine.
+[output.chuniio_proxy]
+enabled = true
+socket_path = "/tmp/chuniio_proxy.sock"
+
+# Udev backend disabled for this test
+[output.udev]
+enabled = false
+
+# No specific device configurations
+[[devices]]
