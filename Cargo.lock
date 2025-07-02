@@ -279,6 +279,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "backflow"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "crossbeam",
+ "evdev",
+ "eyre",
+ "futures-util",
+ "nix 0.30.1",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.27.0",
+ "toml",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "udev",
+ "uinput",
+ "zbus",
+ "zbus-inputplumber",
+]
+
+[[package]]
 name = "backtrace"
 version = "0.3.75"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1210,32 +1236,6 @@ name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
-
-[[package]]
-name = "plumbershim"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "crossbeam",
- "evdev",
- "eyre",
- "futures-util",
- "nix 0.30.1",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite 0.27.0",
- "toml",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "udev",
- "uinput",
- "zbus",
- "zbus-inputplumber",
-]
 
 [[package]]
 name = "polling"

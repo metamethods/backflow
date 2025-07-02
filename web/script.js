@@ -1,4 +1,4 @@
-// WebSocket handler for sending input events to plumbershim
+// WebSocket handler for sending input events to Backflow
 class WebSocketHandler {
   // todo: don't hardcode the ip
   constructor(url = `ws://${window.location.host}/ws`) {
@@ -16,13 +16,13 @@ class WebSocketHandler {
       this.ws = new WebSocket(this.url);
 
       this.ws.onopen = () => {
-        console.log("🟢 Connected to plumbershim WebSocket");
+        console.log("🟢 Connected to Backflow WebSocket");
         this.isConnected = true;
         this.reconnectAttempts = 0;
       };
 
       this.ws.onmessage = (event) => {
-        console.log("📥 Received from plumbershim:", event.data);
+        console.log("📥 Received from Backflow:", event.data);
         try {
           const data = JSON.parse(event.data);
           if (data.events && Array.isArray(data.events)) {

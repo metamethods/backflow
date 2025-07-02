@@ -24,8 +24,8 @@
 //! ## Usage Example
 //!
 //! ```rust,no_run
-//! use plumbershim::output::chuniio_proxy::{ChuniioProxyServer, create_chuniio_channels};
-//! use plumbershim::protos::chuniio::{ChuniInputEvent, ChuniFeedbackEvent};
+//! use backflow::output::chuniio_proxy::{ChuniioProxyServer, create_chuniio_channels};
+//! use backflow::protos::chuniio::{ChuniInputEvent, ChuniFeedbackEvent};
 //! use std::path::PathBuf;
 //!
 //! #[tokio::main]
@@ -87,13 +87,13 @@ use crate::feedback::FeedbackEventStream;
 use crate::input::{InputEvent, InputEventPacket, InputEventStream, KeyboardEvent};
 use crate::output::OutputBackend;
 use crate::protos::chuniio::{
-    ChuniFeedbackEvent, ChuniInputEvent, ChuniMessage, ChuniProtocolState,
-    CHUNI_IO_OPBTN_COIN, CHUNI_IO_OPBTN_SERVICE, CHUNI_IO_OPBTN_TEST,
+    CHUNI_IO_OPBTN_SERVICE, CHUNI_IO_OPBTN_TEST, ChuniFeedbackEvent, ChuniInputEvent, ChuniMessage,
+    ChuniProtocolState,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tracing::{error, info, warn};
 
 /// Default socket path for chuniio proxy
@@ -117,13 +117,11 @@ impl ChuniioProxyServer {
     ) -> Self {
         let socket_path = socket_path.unwrap_or_else(|| {
             // Try to use user runtime directory, fallback to /tmp
-            if let Ok(uid) = std::env::var("UID") {
-                let runtime_path = format!("/run/user/{}/backflow_chuniio.sock", uid);
-                if std::path::Path::new(&format!("/run/user/{}", uid)).exists() {
-                    PathBuf::from(runtime_path)
-                } else {
-                    PathBuf::from(DEFAULT_SOCKET_PATH)
-                }
+            let uid = nix::unistd::Uid::effective().as_raw();
+            let runtime_dir = format!("/run/user/{}", uid);
+            let runtime_path = format!("{}/backflow_chuniio.sock", runtime_dir);
+            if std::path::Path::new(&runtime_dir).exists() {
+                PathBuf::from(runtime_path)
             } else {
                 PathBuf::from(DEFAULT_SOCKET_PATH)
             }
@@ -142,18 +140,18 @@ impl ChuniioProxyServer {
 impl OutputBackend for ChuniioProxyServer {
     async fn run(&mut self) -> eyre::Result<()> {
         tracing::info!("Starting chuniio proxy output backend");
-        
+
         // Create channels for internal communication
         let (input_tx, mut input_rx) = mpsc::unbounded_channel::<ChuniInputEvent>();
         let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<ChuniFeedbackEvent>();
-        
+
         // Start the socket server in a background task
         let socket_path = self.socket_path.clone();
         let protocol_state = Arc::clone(&self.protocol_state);
         let next_client_id = Arc::clone(&self.next_client_id);
         let input_tx_clone = input_tx.clone();
         let feedback_tx_clone = feedback_tx.clone();
-        
+
         let server_handle = tokio::spawn(async move {
             let mut server = InternalChuniioProxyServer {
                 socket_path,
@@ -166,7 +164,7 @@ impl OutputBackend for ChuniioProxyServer {
                 tracing::error!("Chuniio proxy server error: {}", e);
             }
         });
-        
+
         // Start feedback handler task
         let feedback_handle = tokio::spawn(async move {
             while let Some(feedback_event) = feedback_rx.recv().await {
@@ -178,12 +176,16 @@ impl OutputBackend for ChuniioProxyServer {
                         tracing::debug!("Received slider LED feedback: {} bytes", rgb_data.len());
                     }
                     ChuniFeedbackEvent::LedBoard { board, rgb_data } => {
-                        tracing::debug!("Received LED board {} feedback: {} bytes", board, rgb_data.len());
+                        tracing::debug!(
+                            "Received LED board {} feedback: {} bytes",
+                            board,
+                            rgb_data.len()
+                        );
                     }
                 }
             }
         });
-        
+
         // Main loop: convert input events to chuniio events
         loop {
             tokio::select! {
@@ -201,7 +203,7 @@ impl OutputBackend for ChuniioProxyServer {
                         }
                     }
                 }
-                
+
                 // Handle chuniio input events from clients
                 chuni_event = input_rx.recv() => {
                     match chuni_event {
@@ -217,14 +219,14 @@ impl OutputBackend for ChuniioProxyServer {
                 }
             }
         }
-        
+
         // Cleanup
         server_handle.abort();
         feedback_handle.abort();
-        
+
         Ok(())
     }
-    
+
     async fn stop(&mut self) -> eyre::Result<()> {
         tracing::info!("Stopping chuniio proxy output backend");
         Ok(())
@@ -248,7 +250,7 @@ impl ChuniioProxyServer {
             feedback_tx,
         }
     }
-    
+
     /// Process input packets from the application and convert to chuniio events
     async fn process_input_packet(
         &mut self,
@@ -273,9 +275,13 @@ impl ChuniioProxyServer {
         }
         Ok(())
     }
-    
+
     /// Convert keyboard events to chuniio events
-    async fn keyboard_to_chuniio_event(&mut self, key: &str, pressed: bool) -> Option<ChuniInputEvent> {
+    async fn keyboard_to_chuniio_event(
+        &mut self,
+        key: &str,
+        pressed: bool,
+    ) -> Option<ChuniInputEvent> {
         match key {
             "CHUNIIO_COIN" => Some(ChuniInputEvent::CoinInsert),
             "CHUNIIO_TEST" => Some(ChuniInputEvent::OperatorButton {
@@ -522,9 +528,7 @@ impl InternalChuniioProxyServer {
                 }
                 Ok(None)
             }
-            ChuniMessage::Ping => {
-                Ok(Some(ChuniMessage::Pong))
-            }
+            ChuniMessage::Ping => Ok(Some(ChuniMessage::Pong)),
             _ => {
                 // Other messages are responses or feedback, not handled here
                 Ok(None)

@@ -28,7 +28,7 @@ pub struct Backend {
     // Service handles for graceful shutdown
     input_handles: Vec<JoinHandle<()>>,
     filter_handle: Option<JoinHandle<()>>,
-    output_handle: Option<JoinHandle<()>>,
+    output_handles: Vec<JoinHandle<()>>,
     feedback_handles: Vec<JoinHandle<()>>,
 }
 
@@ -48,7 +48,7 @@ impl Backend {
             device_filter,
             input_handles: Vec::new(),
             filter_handle: None,
-            output_handle: None,
+            output_handles: Vec::new(),
             feedback_handles: Vec::new(),
         }
     }
@@ -182,7 +182,7 @@ impl Backend {
                 }
             });
 
-            self.output_handle = Some(handle);
+            self.output_handles.push(handle);
         } else {
             tracing::info!("Uinput output backend is disabled");
         }
@@ -213,7 +213,7 @@ impl Backend {
                     }
                 });
 
-                self.output_handle = Some(handle);
+                self.output_handles.push(handle);
             } else {
                 tracing::info!("Chuniio proxy output backend is disabled");
             }
@@ -271,13 +271,29 @@ impl Backend {
 
     /// Wait for any service to complete
     async fn wait_for_any_service(&mut self) {
-        // Simple approach: just wait for the output service if it exists
+        // Simple approach: just wait for any output service if any exist
         // In practice, services shouldn't complete unless there's an error
-        if let Some(output_handle) = self.output_handle.take() {
-            let _ = output_handle.await;
-            tracing::warn!("Output service completed unexpectedly");
+        if !self.output_handles.is_empty() {
+            let mut handles = std::mem::take(&mut self.output_handles);
+            tokio::select! {
+                _ = async {
+                    for handle in handles.iter_mut() {
+                        if handle.is_finished() {
+                            let _ = handle.await;
+                            return;
+                        }
+                    }
+                    // If none are finished, wait for the first one
+                    if let Some(handle) = handles.pop() {
+                        let _ = handle.await;
+                    }
+                } => {
+                    tracing::warn!("An output service completed unexpectedly");
+                }
+            }
+            self.output_handles = handles;
         } else {
-            // No output service, just wait indefinitely
+            // No output services, just wait indefinitely
             // In a real implementation, you might want to monitor input/feedback services too
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
@@ -302,10 +318,15 @@ impl Backend {
             tracing::info!("Aborted device filter service task");
         }
 
-        // Abort output service task
-        if let Some(ref handle) = self.output_handle {
+        // Abort all output service tasks
+        for handle in &self.output_handles {
             handle.abort();
-            tracing::info!("Aborted output service task");
+        }
+        if !self.output_handles.is_empty() {
+            tracing::info!(
+                "Aborted {} output service task(s)",
+                self.output_handles.len()
+            );
         }
 
         // Abort all feedback service tasks

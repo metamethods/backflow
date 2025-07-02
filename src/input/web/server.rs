@@ -456,7 +456,7 @@ mod tests {
         use std::fs;
 
         // Create a temporary directory structure for testing
-        let temp_dir = std::env::temp_dir().join("plumbershim_test_layouts");
+        let temp_dir = std::env::temp_dir().join("backflow_test_layouts");
         let web_dir = &temp_dir;
         let custom_dir = web_dir.join("custom");
         let layout1_dir = custom_dir.join("chuni");

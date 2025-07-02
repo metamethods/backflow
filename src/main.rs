@@ -24,7 +24,7 @@ pub fn build_logger() -> Result<()> {
             .add_directive("async_io=warn".parse().unwrap())
             .add_directive(format!("{}=warn", PACKET_PROCESSING_TARGET).parse().unwrap())
         // Keep our application logs at trace level
-        // .add_directive("plumbershim=trace".parse().unwrap())
+        // .add_directive("Backflow=trace".parse().unwrap())
     });
 
     tracing_subscriber::fmt()
