@@ -223,6 +223,10 @@ impl UdevOutput {
             InputEvent::Joystick(joystick_event) => {
                 self.handle_joystick_event(joystick_event).await
             }
+            InputEvent::Analog(_analog_event) => {
+                // todo: remap
+                Ok(()) // Analog events are not handled in udev backend
+            }
         }
     }
 
@@ -234,7 +238,7 @@ impl UdevOutput {
         };
 
         if !crate::device_filter::DeviceFilter::is_standard_evdev_key(key) {
-            tracing::debug!("Skipping non-standard evdev key in udev backend: {}", key);
+            tracing::trace!("Skipping non-standard evdev key in udev backend: {}", key);
             return Ok(());
         }
 

@@ -6,10 +6,10 @@
 //! and routing events to specific output backends based on device configuration.
 
 use crate::config::{AppConfig, DeviceConfig};
-use crate::input::{InputEvent, InputEventPacket, KeyboardEvent};
+use crate::input::{AnalogEvent, InputEvent, InputEventPacket, KeyboardEvent};
 use eyre::Result;
 use std::collections::HashMap;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 /// Device filter that applies per-device transformations and routing
 #[derive(Clone)]
@@ -66,6 +66,9 @@ impl DeviceFilter {
             InputEvent::Keyboard(keyboard_event) => {
                 self.transform_and_filter_keyboard_event(keyboard_event, config)
             }
+            InputEvent::Analog(analog_event) => {
+                self.transform_and_filter_analog_event(analog_event, config)
+            }
             InputEvent::Pointer(_) => {
                 // Pointer events don't typically need key remapping
                 // but could be extended in the future for device-specific transformations
@@ -101,7 +104,7 @@ impl DeviceFilter {
 
         // Check if this key needs to be remapped
         if let Some(remapped_key) = config.remap.get(key) {
-            debug!("Remapping key '{}' to '{}' for device", key, remapped_key);
+            trace!("Remapping key '{}' to '{}' for device", key, remapped_key);
             *key = remapped_key.clone();
             return Ok(true); // Always keep remapped keys
         }
@@ -109,7 +112,7 @@ impl DeviceFilter {
         // Handle whitelist mode
         if config.remap_whitelist {
             // In whitelist mode, only allow keys that are in the remap table
-            debug!("Filtering out key '{}' (not in whitelist) for device", key);
+            trace!("Filtering out key '{}' (not in whitelist) for device", key);
             return Ok(false); // Filter out keys not in remap table
         }
 
@@ -120,6 +123,34 @@ impl DeviceFilter {
                 "Custom key '{}' has no remapping defined for device. Event may be ignored by output backend.",
                 key
             );
+        }
+
+        Ok(true) // Keep the event in non-whitelist mode
+    }
+
+    fn transform_and_filter_analog_event(
+        &self,
+        event: &mut AnalogEvent,
+        config: &DeviceConfig,
+    ) -> Result<bool> {
+        // Check if this key needs to be remapped
+        if let Some(remapped_key) = config.remap.get(&event.keycode) {
+            trace!(
+                "Remapping analog key '{}' to '{}' for device",
+                event.keycode, remapped_key
+            );
+            event.keycode = remapped_key.clone();
+            return Ok(true); // Always keep remapped keys
+        }
+
+        // Handle whitelist mode
+        if config.remap_whitelist {
+            // In whitelist mode, only allow keys that are in the remap table
+            debug!(
+                "Filtering out analog key '{}' (not in whitelist) for device",
+                event.keycode
+            );
+            return Ok(false); // Filter out keys not in remap table
         }
 
         Ok(true) // Keep the event in non-whitelist mode

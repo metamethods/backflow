@@ -26,6 +26,10 @@ pub struct InputEventPacket {
 pub enum InputEvent {
     /// A keyboard event, such as a key press or release.
     Keyboard(KeyboardEvent),
+
+    /// A custom analog event
+    Analog(AnalogEvent),
+
     /// A pointer event, such as a mouse button click, release, move, or scroll.
     Pointer(PointerEvent),
     /// A joystick event, such as a button press or release, or an axis movement.
@@ -49,6 +53,15 @@ pub enum KeyboardEvent {
     /// A key release event.
     /// The `key` is the keymap code of the key that was released.
     KeyRelease { key: String },
+}
+
+/// A custom analog event, such as a slider or knob movement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalogEvent {
+    /// The custom keycode for the analog event, used for routing and identification.
+    pub keycode: String,
+    /// The value of the analog event, typically a floating point number representing the position or value.
+    pub value: f32,
 }
 
 /// A pointer event, such as a mouse button click, release, move, or scroll.

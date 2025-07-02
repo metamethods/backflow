@@ -274,7 +274,7 @@ impl ChuniioProxyServer {
         packet: InputEventPacket,
         input_tx: &mpsc::Sender<ChuniInputEvent>,
     ) -> eyre::Result<()> {
-        debug!(
+        trace!(
             "Processing input packet from device {}: {} events",
             packet.device_id,
             packet.events.len()
@@ -304,6 +304,31 @@ impl ChuniioProxyServer {
                                 e
                             );
                         }
+                    }
+                }
+
+                InputEvent::Analog(analog_event) => {
+                    // Only process CHUNIIO_SLIDER_ analog keys in chuniio backend
+                    if let Some(key) = analog_event.keycode.strip_prefix("CHUNIIO_SLIDER_") {
+                        if let Ok(region) = key.parse::<u8>() {
+                            if region < 32 {
+                                let pressure = analog_event.value as u8;
+                                trace!(
+                                    "Processing analog slider region {} with pressure {}",
+                                    region,
+                                    pressure
+                                );
+                                let chuni_event = ChuniInputEvent::SliderTouch { region, pressure };
+                                if let Err(e) = input_tx.try_send(chuni_event) {
+                                    warn!(
+                                        "Failed to send chuniio analog slider event (region {}): {}",
+                                        region, e
+                                    );
+                                }
+                            }
+                        }
+                    } else {
+                        trace!("Skipping non-CHUNIIO analog event in chuniio backend: {:?}", analog_event);
                     }
                 }
                 // Handle other input types as needed
