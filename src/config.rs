@@ -223,14 +223,14 @@ fn default_chuniio_proxy_socket_path() -> PathBuf {
     }
     // Try to use user runtime directory, fallback to /tmp
     if let Ok(uid) = env::var("UID") {
-        let runtime_path = format!("/run/user/{}/backflow_chuniio.sock", uid);
+        let runtime_path = format!("/run/user/{}/backflow_chuniio", uid);
         if std::path::Path::new(&format!("/run/user/{}", uid)).exists() {
             PathBuf::from(runtime_path)
         } else {
-            PathBuf::from("/tmp/backflow_chuniio.sock")
+            PathBuf::from("/tmp/backflow_chuniio")
         }
     } else {
-        PathBuf::from("/tmp/backflow_chuniio.sock")
+        PathBuf::from("/tmp/backflow_chuniio")
     }
 }
 
