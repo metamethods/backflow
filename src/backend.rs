@@ -19,19 +19,11 @@ pub struct MessageStreams {
     pub transformed_input: InputEventStream,
 }
 
-/// Container for chuniio proxy LED channel
-pub struct ChuniioProxyChannel {
-    pub sender: tokio::sync::mpsc::UnboundedSender<
-        crate::feedback::generators::chuni_jvs::ChuniLedDataPacket,
-    >,
-}
-
 /// Represents the actual backend service
 pub struct Backend {
     config: AppConfig,
     streams: MessageStreams,
     device_filter: DeviceFilter,
-    chuniio_proxy_channel: Option<ChuniioProxyChannel>,
 
     // Service handles for graceful shutdown
     input_handles: Vec<JoinHandle<()>>,
@@ -54,7 +46,6 @@ impl Backend {
             config,
             streams,
             device_filter,
-            chuniio_proxy_channel: None,
             input_handles: Vec::new(),
             filter_handle: None,
             output_handles: Vec::new(),
@@ -72,11 +63,11 @@ impl Backend {
         // Start input services
         self.start_input_services().await?;
 
-        // Start feedback services first (to set up channels for chuniio_proxy if needed)
-        self.start_feedback_services().await?;
-
         // Start output services
         self.start_output_services().await?;
+
+        // Start feedback services
+        self.start_feedback_services().await?;
 
         tracing::info!("All backend services started successfully");
         Ok(())
@@ -208,19 +199,14 @@ impl Backend {
                 let feedback_stream = self.streams.feedback.clone();
                 let socket_path = chuniio_config.socket_path.clone();
                 let feedback_config = self.config.feedback.chuniio.clone();
-                let led_packet_tx = self
-                    .chuniio_proxy_channel
-                    .as_ref()
-                    .map(|c| c.sender.clone());
 
                 let handle = tokio::spawn(async move {
                     let mut output = OutputBackendType::ChuniioProxy(
-                        crate::output::chuniio_proxy::ChuniioProxyServer::new_with_led_channel(
+                        crate::output::chuniio_proxy::ChuniioProxyServer::new(
                             Some(socket_path),
                             input_stream,
                             feedback_stream,
                             feedback_config,
-                            led_packet_tx,
                         ),
                     );
 
@@ -240,7 +226,7 @@ impl Backend {
 
     /// Start feedback services based on configuration
     async fn start_feedback_services(&mut self) -> Result<()> {
-        // Check if chuniio_proxy is enabled - if so, use proxy channel mode for chuniio feedback service
+        // Check if chuniio_proxy is enabled - if so, skip the separate chuniio feedback service
         let chuniio_proxy_enabled = self
             .config
             .output
@@ -252,30 +238,8 @@ impl Backend {
         if let Some(chuniio_config) = &self.config.feedback.chuniio {
             if chuniio_proxy_enabled {
                 tracing::info!(
-                    "Starting ChuniIO RGB feedback service in proxy mode - chuniio_proxy output backend will feed LED data directly"
+                    "Skipping ChuniIO RGB feedback service - chuniio_proxy output backend is handling LED feedback"
                 );
-
-                // Create a channel for chuniio_proxy to send LED packets to the feedback service
-                use crate::feedback::generators::chuni_jvs::{
-                    create_chuniio_proxy_channel, run_chuniio_service_with_proxy,
-                };
-                let (proxy_tx, proxy_rx) = create_chuniio_proxy_channel();
-
-                // Store the sender for the chuniio_proxy to use
-                self.chuniio_proxy_channel = Some(ChuniioProxyChannel { sender: proxy_tx });
-
-                let config = chuniio_config.clone();
-                let feedback_stream = self.streams.feedback.clone();
-
-                let handle = tokio::spawn(async move {
-                    if let Err(e) =
-                        run_chuniio_service_with_proxy(config, feedback_stream, proxy_rx).await
-                    {
-                        tracing::error!("ChuniIO RGB feedback service (proxy mode) error: {}", e);
-                    }
-                });
-
-                self.feedback_handles.push(handle);
             } else {
                 tracing::info!(
                     "Starting ChuniIO RGB feedback service on socket: {:?}",

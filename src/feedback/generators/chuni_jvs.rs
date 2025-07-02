@@ -36,7 +36,6 @@ use crate::config::ChuniIoRgbConfig;
 use crate::feedback::FeedbackEvent;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
-use tokio::sync::mpsc;
 #[allow(dead_code)]
 const LED_PACKET_FRAMING: u8 = 0xE0;
 const LED_PACKET_ESCAPE: u8 = 0xD0;
@@ -268,7 +267,14 @@ impl ChuniLedDataPacket {
         Ok((ChuniLedDataPacket { board, data }, i))
     }
 
-
+    /// Get RGB values as a vector (useful for generic processing)
+    pub fn to_rgb_vec(&self) -> Vec<Rgb> {
+        match &self.data {
+            LedBoardData::BillboardLeft(leds) => leds.to_vec(),
+            LedBoardData::BillboardRight(leds) => leds.to_vec(),
+            LedBoardData::Slider(leds) => leds.to_vec(),
+        }
+    }
 
     /// Get the number of LEDs in this packet
     pub fn led_count(&self) -> usize {
@@ -301,7 +307,12 @@ impl TryFrom<u8> for ChuniLedBoard {
     }
 }
 
-
+impl ChuniLedDataPacket {
+    /// Get board type as enum
+    pub fn board_type(&self) -> Result<ChuniLedBoard, &'static str> {
+        ChuniLedBoard::try_from(self.board)
+    }
+}
 
 /// CHUNITHM LED packet parser
 pub struct ChuniLedParser {
@@ -344,7 +355,24 @@ impl ChuniLedParser {
         Ok(packets)
     }
 
+    /// Convert LED packet to feedback events
+    pub fn packet_to_feedback_events(&self, packet: &ChuniLedDataPacket) -> Vec<FeedbackEvent> {
+        let mut events = Vec::new();
+        let rgb_values = packet.to_rgb_vec();
 
+        // Convert RGB values to feedback events
+        for (led_index, rgb) in rgb_values.iter().enumerate() {
+            // Map LED positions to feedback events
+            events.push(FeedbackEvent::Led(crate::feedback::LedEvent::Set {
+                led_id: led_index as u8,
+                on: rgb.r > 0 || rgb.g > 0 || rgb.b > 0, // LED is on if any color component is non-zero
+                brightness: Some(rgb.r.max(rgb.g).max(rgb.b)), // Use max RGB component as brightness
+                rgb: Some((rgb.r, rgb.g, rgb.b)),
+            }));
+        }
+
+        events
+    }
 }
 
 impl Default for ChuniLedParser {
@@ -362,22 +390,6 @@ pub async fn run_chuniio_service(
     service.run().await
 }
 
-/// Create and run a CHUNITHM RGB lightsync service with chuniio_proxy integration
-/// This receives LED packets directly from chuniio_proxy instead of reading from a socket
-pub async fn run_chuniio_service_with_proxy(
-    config: ChuniIoRgbConfig,
-    feedback_stream: crate::feedback::FeedbackEventStream,
-    proxy_led_rx: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
-) -> eyre::Result<()> {
-    let mut service = ChuniRgbService::new_with_proxy_channel(config, feedback_stream, proxy_led_rx);
-    service.run().await
-}
-
-/// Create a channel for sending LED packets from chuniio_proxy to ChuniRgbService
-pub fn create_chuniio_proxy_channel() -> (mpsc::UnboundedSender<ChuniLedDataPacket>, mpsc::UnboundedReceiver<ChuniLedDataPacket>) {
-    mpsc::unbounded_channel()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -392,7 +404,7 @@ mod tests {
 
         let (packet, _used) = ChuniLedDataPacket::try_parse_packet(&data).unwrap();
         assert_eq!(packet.board, 2);
-        assert_eq!(ChuniLedBoard::try_from(packet.board).unwrap(), ChuniLedBoard::Slider);
+        assert_eq!(packet.board_type().unwrap(), ChuniLedBoard::Slider);
         assert_eq!(packet.led_count(), 31);
 
         // Check that we have slider data
@@ -481,8 +493,6 @@ pub struct ChuniRgbService {
     config: ChuniIoRgbConfig,
     parser: ChuniLedParser,
     feedback_stream: crate::feedback::FeedbackEventStream,
-    /// Optional receiver for LED packets from chuniio_proxy (bypasses socket reading)
-    proxy_led_rx: Option<mpsc::UnboundedReceiver<ChuniLedDataPacket>>,
 }
 
 impl ChuniRgbService {
@@ -495,52 +505,11 @@ impl ChuniRgbService {
             config,
             parser: ChuniLedParser::new(),
             feedback_stream,
-            proxy_led_rx: None,
         }
     }
 
-    /// Create a new CHUNITHM RGB feedback service with chuniio_proxy integration
-    pub fn new_with_proxy_channel(
-        config: ChuniIoRgbConfig,
-        feedback_stream: crate::feedback::FeedbackEventStream,
-        proxy_led_rx: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
-    ) -> Self {
-        Self {
-            config,
-            parser: ChuniLedParser::new(),
-            feedback_stream,
-            proxy_led_rx: Some(proxy_led_rx),
-        }
-    }
-
-    /// Start the service and listen for LED data on the Unix domain socket or proxy channel
+    /// Start the service and listen for LED data on the Unix domain socket
     pub async fn run(&mut self) -> eyre::Result<()> {
-        if let Some(mut proxy_rx) = self.proxy_led_rx.take() {
-            // Run in proxy mode - receive LED packets directly from chuniio_proxy
-            tracing::info!("Starting CHUNITHM RGB service in proxy mode - receiving LED packets directly from chuniio_proxy");
-            
-            loop {
-                match proxy_rx.recv().await {
-                    Some(packet) => {
-                        if let Err(e) = self.process_led_packet(&packet).await {
-                            tracing::error!("Error processing LED packet from proxy: {}", e);
-                        }
-                    }
-                    None => {
-                        tracing::info!("Chuniio proxy LED channel closed, shutting down");
-                        break;
-                    }
-                }
-            }
-            Ok(())
-        } else {
-            // Run in socket mode - listen on Unix domain socket
-            self.run_socket_mode().await
-        }
-    }
-
-    /// Run the service in socket mode (original behavior)
-    async fn run_socket_mode(&mut self) -> eyre::Result<()> {
         tracing::info!(
             "Starting CHUNITHM RGB service listening on: {:?}",
             self.config.socket_path
@@ -742,9 +711,8 @@ impl ChuniRgbService {
 
         // Generate LED events with board-specific ID offset
         let id_offset = match board_id {
-            0 => 100,   // Billboard left starts at LED ID 100
-            1 => 200, // Billboard right starts at LED ID 200
-            2 => 0, // Slider starts at LED ID 0
+            0 => 0,   // Billboard left starts at LED ID 0
+            1 => 100, // Billboard right starts at LED ID 100
             _ => return Err(eyre::eyre!("Invalid billboard board ID: {}", board_id)),
         };
 
