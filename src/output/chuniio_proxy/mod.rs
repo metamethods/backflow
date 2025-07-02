@@ -145,9 +145,9 @@ impl OutputBackend for ChuniioProxyServer {
     async fn run(&mut self) -> eyre::Result<()> {
         tracing::info!("Starting chuniio proxy output backend");
 
-        // Create channels for internal communication
-        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<ChuniInputEvent>();
-        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<ChuniFeedbackEvent>();
+        // Create channels for internal communication with larger buffers for better throughput
+        let (input_tx, mut input_rx) = mpsc::channel::<ChuniInputEvent>(1000);
+        let (feedback_tx, mut feedback_rx) = mpsc::channel::<ChuniFeedbackEvent>(1000);
 
         // Start the socket server in a background task
         let socket_path = self.socket_path.clone();
@@ -215,11 +215,15 @@ impl OutputBackend for ChuniioProxyServer {
                     match chuni_event {
                         Some(event) => {
                             info!("Processing chuniio event in proxy: {:?}", event);
-                            // Update internal state
-                            let mut state = self.protocol_state.write().await;
-                            state.process_input_event(event);
-                            info!("Updated proxy state - opbtn: {}, beams: {}, coins: {}",
-                                  state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter);
+                            // Update internal state - use try_write for non-blocking
+                            if let Ok(mut state) = self.protocol_state.try_write() {
+                                state.process_input_event(event);
+                                info!("Updated proxy state - opbtn: {}, beams: {}, coins: {}",
+                                      state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter);
+                            } else {
+                                // If we can't get the lock immediately, skip state update to avoid blocking
+                                warn!("Could not acquire state lock, skipping state update for chuniio event");
+                            }
                         }
                         None => {
                             tracing::debug!("Chuniio input channel closed");
@@ -246,8 +250,8 @@ impl ChuniioProxyServer {
     /// Create internal server with channels (used by the OutputBackend implementation)
     fn new_internal(
         socket_path: PathBuf,
-        input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
-        feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        input_tx: mpsc::Sender<ChuniInputEvent>,
+        feedback_tx: mpsc::Sender<ChuniFeedbackEvent>,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         next_client_id: Arc<RwLock<u64>>,
         led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
@@ -266,7 +270,7 @@ impl ChuniioProxyServer {
     async fn process_input_packet(
         &mut self,
         packet: InputEventPacket,
-        input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
+        input_tx: &mpsc::Sender<ChuniInputEvent>,
     ) -> eyre::Result<()> {
         debug!(
             "Processing input packet from device {}: {} events",
@@ -284,7 +288,9 @@ impl ChuniioProxyServer {
                     debug!("Processing key press: {}", key);
                     if let Some(chuni_event) = self.keyboard_to_chuniio_event(&key, true).await {
                         debug!("Sending chuniio event to proxy: {:?}", chuni_event);
-                        let _ = input_tx.send(chuni_event);
+                        if let Err(e) = input_tx.try_send(chuni_event) {
+                            warn!("Failed to send chuniio input event (key press): {}", e);
+                        }
                     }
                 }
                 InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
@@ -296,7 +302,9 @@ impl ChuniioProxyServer {
                     debug!("Processing key release: {}", key);
                     if let Some(chuni_event) = self.keyboard_to_chuniio_event(&key, false).await {
                         debug!("Sending chuniio event to proxy: {:?}", chuni_event);
-                        let _ = input_tx.send(chuni_event);
+                        if let Err(e) = input_tx.try_send(chuni_event) {
+                            warn!("Failed to send chuniio input event (key release): {}", e);
+                        }
                     }
                 }
                 // Handle other input types as needed
@@ -371,8 +379,8 @@ struct InternalChuniioProxyServer {
     socket_path: PathBuf,
     protocol_state: Arc<RwLock<ChuniProtocolState>>,
     next_client_id: Arc<RwLock<u64>>,
-    input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
-    feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+    input_tx: mpsc::Sender<ChuniInputEvent>,
+    feedback_tx: mpsc::Sender<ChuniFeedbackEvent>,
     led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
 }
 
@@ -382,8 +390,8 @@ impl InternalChuniioProxyServer {
         socket_path: PathBuf,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         next_client_id: Arc<RwLock<u64>>,
-        input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
-        feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        input_tx: mpsc::Sender<ChuniInputEvent>,
+        feedback_tx: mpsc::Sender<ChuniFeedbackEvent>,
         led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
     ) -> Self {
         Self {
@@ -463,8 +471,8 @@ impl InternalChuniioProxyServer {
         client_id: u64,
         stream: UnixStream,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
-        input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
-        _feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        input_tx: mpsc::Sender<ChuniInputEvent>,
+        _feedback_tx: mpsc::Sender<ChuniFeedbackEvent>,
         led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(
@@ -572,191 +580,147 @@ impl InternalChuniioProxyServer {
         client_id: u64,
         message: ChuniMessage,
         protocol_state: &Arc<RwLock<ChuniProtocolState>>,
-        input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
-        _feedback_tx: &mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        input_tx: &mpsc::Sender<ChuniInputEvent>,
+        _feedback_tx: &mpsc::Sender<ChuniFeedbackEvent>,
         led_packet_tx: &mpsc::Sender<ChuniLedDataPacket>,
     ) -> Result<Option<ChuniMessage>, Box<dyn std::error::Error + Send + Sync>> {
         match message {
             ChuniMessage::JvsPoll => {
-                // Return current JVS state
-                let state = protocol_state.read().await;
-                let response = ChuniMessage::JvsPollResponse {
-                    opbtn: state.jvs_state.opbtn,
-                    beams: state.jvs_state.beams,
+                // Return current JVS state - use try_read for non-blocking access
+                let response = if let Ok(state) = protocol_state.try_read() {
+                    ChuniMessage::JvsPollResponse {
+                        opbtn: state.jvs_state.opbtn,
+                        beams: state.jvs_state.beams,
+                    }
+                } else {
+                    // If we can't get the lock, return default state to avoid blocking
+                    ChuniMessage::JvsPollResponse {
+                        opbtn: 0,
+                        beams: 0x3F, // All beams clear by default
+                    }
                 };
-                // info!(
-                //     "Client {} JVS poll response: opbtn={}, beams={}",
-                //     client_id, state.jvs_state.opbtn, state.jvs_state.beams
-                // );
                 Ok(Some(response))
             }
             ChuniMessage::CoinCounterRead => {
-                // Return current coin count
-                let state = protocol_state.read().await;
-                let response = ChuniMessage::CoinCounterReadResponse {
-                    count: state.coin_counter,
+                // Return current coin count - use try_read for non-blocking access
+                let response = if let Ok(state) = protocol_state.try_read() {
+                    ChuniMessage::CoinCounterReadResponse {
+                        count: state.coin_counter,
+                    }
+                } else {
+                    // If we can't get the lock, return 0 to avoid blocking
+                    ChuniMessage::CoinCounterReadResponse { count: 0 }
                 };
-                // info!(
-                //     "Client {} coin counter response: count={}",
-                //     client_id, state.coin_counter
-                // );
                 Ok(Some(response))
             }
             ChuniMessage::SliderStateRead => {
-                // Return current slider state
-                let state = protocol_state.read().await;
-                let response = ChuniMessage::SliderStateReadResponse {
-                    pressure: state.slider_state.pressure,
+                // Return current slider state - use try_read for non-blocking access
+                let response = if let Ok(state) = protocol_state.try_read() {
+                    ChuniMessage::SliderStateReadResponse {
+                        pressure: state.slider_state.pressure,
+                    }
+                } else {
+                    // If we can't get the lock, return empty pressure array
+                    ChuniMessage::SliderStateReadResponse { pressure: [0; 32] }
                 };
-                // info!(
-                //     "Client {} slider state read response: pressure={:?}",
-                //     client_id, state.slider_state.pressure
-                // );
                 Ok(Some(response))
             }
             ChuniMessage::SliderInput { pressure } => {
                 // Update slider state and send input events
                 info!("Client {} slider input: pressure={:?}", client_id, pressure);
-                {
-                    let mut state = protocol_state.write().await;
+                // Use try_write for non-blocking state update
+                if let Ok(mut state) = protocol_state.try_write() {
                     state.slider_state.pressure = pressure;
+                } else {
+                    warn!("Could not acquire state lock for slider input update");
                 }
 
                 // Send slider touch events for changed regions
                 for (region, &pressure_value) in pressure.iter().enumerate() {
                     if pressure_value > 0 {
-                        let _ = input_tx.send(ChuniInputEvent::SliderTouch {
+                        if let Err(e) = input_tx.try_send(ChuniInputEvent::SliderTouch {
                             region: region as u8,
                             pressure: pressure_value,
-                        });
+                        }) {
+                            warn!("Failed to send slider touch event: {}", e);
+                        }
                     }
                 }
                 Ok(Some(ChuniMessage::Pong)) // Send immediate ACK to prevent game from waiting
             }
             ChuniMessage::SliderLedUpdate { rgb_data } => {
-                debug!(
-                    "Client {} slider LED update: {} bytes",
-                    client_id,
-                    rgb_data.len()
-                );
-
-                // This is board 2
+                // Fast path for slider LED updates - minimal processing
                 let board = 2;
                 let mut led_blocks: Vec<&[u8]> = rgb_data.chunks(3).collect();
                 led_blocks.reverse();
 
-                let rgb_values: Vec<Rgb> = led_blocks
-                    .iter()
-                    .map(|brg_chunk| {
-                        if brg_chunk.len() == 3 {
-                            Rgb {
-                                r: brg_chunk[1],
-                                g: brg_chunk[2],
-                                b: brg_chunk[0],
-                            }
-                        } else {
-                            Rgb { r: 0, g: 0, b: 0 }
-                        }
-                    })
-                    .collect();
-
-                if rgb_values.len() == 31 {
-                    let data = LedBoardData::Slider(rgb_values.try_into().unwrap());
-                    let packet = ChuniLedDataPacket { board, data };
-                    if let Err(e) = led_packet_tx.try_send(packet) {
-                        warn!("Failed to send slider LED packet: {}", e);
+                // Pre-allocate RGB array for better performance
+                let mut rgb_array = [Rgb { r: 0, g: 0, b: 0 }; 31];
+                for (i, brg_chunk) in led_blocks.iter().enumerate().take(31) {
+                    if brg_chunk.len() == 3 {
+                        rgb_array[i] = Rgb {
+                            r: brg_chunk[1],
+                            g: brg_chunk[2],
+                            b: brg_chunk[0],
+                        };
                     }
-                } else {
-                    warn!(
-                        "Incorrect data length for slider update: got {} bytes, expected 93",
-                        rgb_data.len()
-                    );
                 }
 
-                // Send immediate ACK to prevent game from waiting
+                let packet = ChuniLedDataPacket {
+                    board,
+                    data: LedBoardData::Slider(rgb_array),
+                };
+
+                // Use try_send for non-blocking LED packet transmission
+                if let Err(e) = led_packet_tx.try_send(packet) {
+                    // Only warn on full channel, not other errors to reduce log spam
+                    if matches!(e, mpsc::error::TrySendError::Full(_)) {
+                        trace!("LED packet channel full, dropping frame");
+                    } else {
+                        warn!("Failed to send slider LED packet: {}", e);
+                    }
+                }
+
+                // Immediate ACK - no waiting
                 Ok(Some(ChuniMessage::Pong))
             }
             ChuniMessage::LedUpdate { board, rgb_data } => {
+                // Fast path for LED updates - only process board 2 (slider)
                 if board != 2 {
-                    // warn!("LedUpdate: Only board 2 (slider) is supported for now, got board {}", board);
                     return Ok(Some(ChuniMessage::Pong));
                 }
-                trace!(
-                    target: crate::PACKET_PROCESSING_TARGET,
-                    "Client {} LED board update: board={}, {} bytes",
-                    client_id,
-                    board,
-                    rgb_data.len()
-                );
 
                 let mut led_blocks: Vec<&[u8]> = rgb_data.chunks(3).collect();
-                if board == 2 {
-                    // Only reverse for slider
-                    led_blocks.reverse();
+                led_blocks.reverse(); // Only reverse for slider
+
+                // Pre-allocate RGB array for better performance
+                let mut rgb_array = [Rgb { r: 0, g: 0, b: 0 }; 31];
+                for (i, brg_chunk) in led_blocks.iter().enumerate().take(31) {
+                    if brg_chunk.len() == 3 {
+                        rgb_array[i] = Rgb {
+                            r: brg_chunk[1],
+                            g: brg_chunk[2],
+                            b: brg_chunk[0],
+                        };
+                    }
                 }
 
-                let rgb_values: Vec<Rgb> = led_blocks
-                    .iter()
-                    .map(|brg_chunk| {
-                        if brg_chunk.len() == 3 {
-                            Rgb {
-                                r: brg_chunk[1],
-                                g: brg_chunk[2],
-                                b: brg_chunk[0],
-                            }
-                        } else {
-                            Rgb { r: 0, g: 0, b: 0 }
-                        }
-                    })
-                    .collect();
-
-                let rgb_values_len = rgb_values.len();
-                let data = match board {
-                    0 => {
-                        if let Ok(leds) = rgb_values.try_into() {
-                            LedBoardData::BillboardLeft(leds)
-                        } else {
-                            warn!(
-                                "Incorrect data length for billboard 0: got {} LEDs, expected 53",
-                                rgb_values_len
-                            );
-                            return Ok(Some(ChuniMessage::Pong));
-                        }
-                    }
-                    1 => {
-                        if let Ok(leds) = rgb_values.try_into() {
-                            LedBoardData::BillboardRight(leds)
-                        } else {
-                            warn!(
-                                "Incorrect data length for billboard 1: got {} LEDs, expected 63",
-                                rgb_values_len
-                            );
-                            return Ok(Some(ChuniMessage::Pong));
-                        }
-                    }
-                    2 => {
-                        if let Ok(leds) = rgb_values.try_into() {
-                            LedBoardData::Slider(leds)
-                        } else {
-                            warn!(
-                                "Incorrect data length for slider: got {} LEDs, expected 31",
-                                rgb_values_len
-                            );
-                            return Ok(Some(ChuniMessage::Pong));
-                        }
-                    }
-                    _ => {
-                        warn!("Invalid board ID for LedUpdate: {}", board);
-                        return Ok(Some(ChuniMessage::Pong));
-                    }
+                let packet = ChuniLedDataPacket {
+                    board,
+                    data: LedBoardData::Slider(rgb_array),
                 };
 
-                let packet = ChuniLedDataPacket { board, data };
+                // Use try_send for non-blocking LED packet transmission
                 if let Err(e) = led_packet_tx.try_send(packet) {
-                    warn!("Failed to send LED board {} packet: {}", board, e);
+                    // Only warn on full channel, not other errors to reduce log spam
+                    if matches!(e, mpsc::error::TrySendError::Full(_)) {
+                        trace!("LED packet channel full, dropping frame");
+                    } else {
+                        warn!("Failed to send LED board {} packet: {}", board, e);
+                    }
                 }
 
-                // Send immediate ACK to prevent game from waiting
+                // Immediate ACK - no waiting
                 Ok(Some(ChuniMessage::Pong))
             }
             ChuniMessage::Ping => {
@@ -794,23 +758,25 @@ impl InternalChuniioProxyServer {
     pub async fn send_feedback(
         &self,
         event: ChuniFeedbackEvent,
-    ) -> Result<(), mpsc::error::SendError<ChuniFeedbackEvent>> {
-        self.feedback_tx.send(event)
+    ) -> Result<(), mpsc::error::TrySendError<ChuniFeedbackEvent>> {
+        self.feedback_tx.try_send(event)
     }
 
     /// Send input event (for external use)
     pub async fn send_input(
         &self,
         event: ChuniInputEvent,
-    ) -> Result<(), mpsc::error::SendError<ChuniInputEvent>> {
-        // Update internal state
-        {
-            let mut state = self.protocol_state.write().await;
+    ) -> Result<(), mpsc::error::TrySendError<ChuniInputEvent>> {
+        // Update internal state - use try_write for non-blocking
+        if let Ok(mut state) = self.protocol_state.try_write() {
             state.process_input_event(event.clone());
+        } else {
+            // If we can't get the lock immediately, skip state update to avoid blocking
+            warn!("Could not acquire state lock for input event processing");
         }
 
         // Forward to input handler
-        self.input_tx.send(event)
+        self.input_tx.try_send(event)
     }
 }
 

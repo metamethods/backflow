@@ -295,7 +295,7 @@ pub fn create_chuni_led_channel() -> (
     mpsc::Sender<ChuniLedDataPacket>,
     mpsc::Receiver<ChuniLedDataPacket>,
 ) {
-    mpsc::channel(100)
+    mpsc::channel(500) // Larger buffer for high-frequency LED updates
 }
 
 /// CHUNITHM JVS reader service that listens on a Unix domain socket,
@@ -594,11 +594,36 @@ impl ChuniRgbService {
     /// Start the RGB feedback service
     pub async fn run(&mut self) -> eyre::Result<()> {
         info!("Starting CHUNITHM RGB feedback service");
-        while let Some(packet) = self.packet_receiver.recv().await {
-            if let Err(e) = self.process_packet(packet).await {
-                warn!("Failed to process LED packet: {}", e);
+
+        // Use try_recv in a loop for lower latency processing
+        loop {
+            tokio::select! {
+                // Process packets with high priority
+                packet = self.packet_receiver.recv() => {
+                    match packet {
+                        Some(packet) => {
+                            if let Err(e) = self.process_packet(packet).await {
+                                warn!("Failed to process LED packet: {}", e);
+                            }
+                        }
+                        None => {
+                            info!("LED packet channel closed");
+                            break;
+                        }
+                    }
+                }
+                // Small yield to prevent busy waiting
+                _ = tokio::time::sleep(tokio::time::Duration::from_micros(100)) => {
+                    // Process any remaining packets in the queue quickly
+                    while let Ok(packet) = self.packet_receiver.try_recv() {
+                        if let Err(e) = self.process_packet(packet).await {
+                            warn!("Failed to process LED packet: {}", e);
+                        }
+                    }
+                }
             }
         }
+
         info!("CHUNITHM RGB feedback service stopped");
         Ok(())
     }
@@ -607,10 +632,8 @@ impl ChuniRgbService {
     async fn process_packet(&self, packet: ChuniLedDataPacket) -> eyre::Result<()> {
         let board_id = packet.board;
         let device_id = format!("chuni_jvs_board_{}", board_id);
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        // Skip timestamp calculation for performance
+        let timestamp = 0u64;
 
         let events = match packet.data {
             LedBoardData::Slider(leds) => self.process_slider_leds(leds),
@@ -624,8 +647,15 @@ impl ChuniRgbService {
                 timestamp,
                 events,
             };
-            if let Err(e) = self.feedback_stream.send(feedback_packet).await {
-                warn!("Failed to send feedback packet: {}", e);
+
+            // Send feedback packet - use try_send for non-blocking transmission
+            if let Err(e) = self.feedback_stream.try_send(feedback_packet) {
+                // Only log full channel warnings to reduce spam
+                if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
+                    // Drop LED updates silently when feedback channel is full
+                } else {
+                    warn!("Failed to send feedback packet: {}", e);
+                }
             }
         }
 

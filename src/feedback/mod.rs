@@ -190,7 +190,7 @@ pub struct FeedbackEventStream {
 impl FeedbackEventStream {
     /// Creates a new `FeedbackEventStream` with a tokio mpsc channel.
     pub fn new() -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
+        let (tx, rx) = tokio::sync::mpsc::channel(500); // Larger buffer for high-frequency feedback
         Self {
             tx,
             rx: std::sync::Arc::new(tokio::sync::Mutex::new(rx)),
@@ -203,6 +203,14 @@ impl FeedbackEventStream {
         packet: FeedbackEventPacket,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<FeedbackEventPacket>> {
         self.tx.send(packet).await
+    }
+
+    /// Tries to send a feedback event packet through the stream without blocking.
+    pub fn try_send(
+        &self,
+        packet: FeedbackEventPacket,
+    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<FeedbackEventPacket>> {
+        self.tx.try_send(packet)
     }
 
     /// Receives a feedback event packet from the stream.
