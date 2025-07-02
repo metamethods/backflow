@@ -83,8 +83,8 @@
 //!
 //! All multi-byte integers are transmitted in little-endian format.
 
-use crate::config::ChuniIoRgbConfig;
-use crate::feedback::{FeedbackEvent, FeedbackEventPacket, FeedbackEventStream, LedEvent};
+use crate::feedback::FeedbackEventStream;
+use crate::feedback::generators::chuni_jvs::{ChuniLedDataPacket, LedBoardData, Rgb};
 use crate::input::{InputEvent, InputEventPacket, InputEventStream, KeyboardEvent};
 use crate::output::OutputBackend;
 use crate::protos::chuniio::{
@@ -95,7 +95,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{RwLock, mpsc};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 /// Default socket path for chuniio proxy
 const DEFAULT_SOCKET_PATH: &str = "/tmp/backflow_chuniio.sock";
@@ -107,7 +107,7 @@ pub struct ChuniioProxyServer {
     next_client_id: Arc<RwLock<u64>>,
     input_stream: InputEventStream,
     feedback_stream: FeedbackEventStream,
-    feedback_config: Option<ChuniIoRgbConfig>,
+    led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
 }
 
 impl ChuniioProxyServer {
@@ -116,7 +116,7 @@ impl ChuniioProxyServer {
         socket_path: Option<PathBuf>,
         input_stream: InputEventStream,
         feedback_stream: FeedbackEventStream,
-        feedback_config: Option<ChuniIoRgbConfig>,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> Self {
         let socket_path = socket_path.unwrap_or_else(|| {
             // Try to use user runtime directory, fallback to /tmp
@@ -136,58 +136,8 @@ impl ChuniioProxyServer {
             next_client_id: Arc::new(RwLock::new(0)),
             input_stream,
             feedback_stream,
-            feedback_config,
+            led_packet_tx,
         }
-    }
-
-    /// Convert RGB LED data to feedback events and send them
-    async fn route_led_data_to_feedback(&self, board: u8, rgb_data: Vec<u8>) -> eyre::Result<()> {
-        // Create feedback packet
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
-
-        let device_id = format!("chuniio_board_{}", board);
-        let mut packet = FeedbackEventPacket {
-            device_id,
-            timestamp,
-            events: Vec::new(),
-        };
-
-        // Convert RGB data (every 3 bytes = R,G,B for one LED) to individual LED events
-        for (led_index, rgb_chunk) in rgb_data.chunks(3).enumerate() {
-            if rgb_chunk.len() == 3 {
-                let r = rgb_chunk[0];
-                let g = rgb_chunk[1];
-                let b = rgb_chunk[2];
-
-                // Create LED event
-                let led_event = FeedbackEvent::Led(LedEvent::Set {
-                    led_id: led_index as u8,
-                    on: r > 0 || g > 0 || b > 0, // LED is on if any color component > 0
-                    brightness: Some(((r as u16 + g as u16 + b as u16) / 3) as u8), // Average brightness
-                    rgb: Some((r, g, b)),
-                });
-
-                packet.events.push(led_event);
-            }
-        }
-
-        // Send feedback packet if it has events
-        if !packet.events.is_empty() {
-            let event_count = packet.events.len();
-            if let Err(e) = self.feedback_stream.send(packet).await {
-                warn!("Failed to send LED feedback packet: {}", e);
-            } else {
-                debug!(
-                    "Sent LED feedback for board {} with {} LEDs",
-                    board, event_count
-                );
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -205,19 +155,17 @@ impl OutputBackend for ChuniioProxyServer {
         let next_client_id = Arc::clone(&self.next_client_id);
         let input_tx_clone = input_tx.clone();
         let feedback_tx_clone = feedback_tx.clone();
-        let main_feedback_stream = self.feedback_stream.clone();
-        let feedback_config = self.feedback_config.clone();
+        let led_packet_tx_clone = self.led_packet_tx.clone();
 
         let server_handle = tokio::spawn(async move {
-            let mut server = InternalChuniioProxyServer {
+            let mut server = InternalChuniioProxyServer::new(
                 socket_path,
                 protocol_state,
                 next_client_id,
-                input_tx: input_tx_clone,
-                feedback_tx: feedback_tx_clone,
-                main_feedback_stream,
-                feedback_config,
-            };
+                input_tx_clone,
+                feedback_tx_clone,
+                led_packet_tx_clone,
+            );
             if let Err(e) = server.start_server().await {
                 tracing::error!("Chuniio proxy server error: {}", e);
             }
@@ -302,8 +250,7 @@ impl ChuniioProxyServer {
         feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         next_client_id: Arc<RwLock<u64>>,
-        main_feedback_stream: FeedbackEventStream,
-        feedback_config: Option<ChuniIoRgbConfig>,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> InternalChuniioProxyServer {
         InternalChuniioProxyServer {
             socket_path,
@@ -311,8 +258,7 @@ impl ChuniioProxyServer {
             next_client_id,
             input_tx,
             feedback_tx,
-            main_feedback_stream,
-            feedback_config,
+            led_packet_tx,
         }
     }
 
@@ -427,8 +373,7 @@ struct InternalChuniioProxyServer {
     next_client_id: Arc<RwLock<u64>>,
     input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
     feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
-    main_feedback_stream: FeedbackEventStream,
-    feedback_config: Option<ChuniIoRgbConfig>,
+    led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
 }
 
 impl InternalChuniioProxyServer {
@@ -439,8 +384,7 @@ impl InternalChuniioProxyServer {
         next_client_id: Arc<RwLock<u64>>,
         input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
         feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
-        main_feedback_stream: FeedbackEventStream,
-        feedback_config: Option<ChuniIoRgbConfig>,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> Self {
         Self {
             socket_path,
@@ -448,8 +392,7 @@ impl InternalChuniioProxyServer {
             next_client_id,
             input_tx,
             feedback_tx,
-            main_feedback_stream,
-            feedback_config,
+            led_packet_tx,
         }
     }
 
@@ -490,8 +433,7 @@ impl InternalChuniioProxyServer {
                     let protocol_state = Arc::clone(&self.protocol_state);
                     let input_tx = self.input_tx.clone();
                     let feedback_tx = self.feedback_tx.clone();
-                    let main_feedback_stream = self.main_feedback_stream.clone();
-                    let feedback_config = self.feedback_config.clone();
+                    let led_packet_tx = self.led_packet_tx.clone();
 
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_client(
@@ -500,8 +442,7 @@ impl InternalChuniioProxyServer {
                             protocol_state,
                             input_tx,
                             feedback_tx,
-                            main_feedback_stream,
-                            feedback_config,
+                            led_packet_tx,
                         )
                         .await
                         {
@@ -524,8 +465,7 @@ impl InternalChuniioProxyServer {
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
         _feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
-        main_feedback_stream: FeedbackEventStream,
-        feedback_config: Option<ChuniIoRgbConfig>,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(
             "Client {} connected and starting packet processing",
@@ -584,9 +524,8 @@ impl InternalChuniioProxyServer {
                         message,
                         &protocol_state,
                         &input_tx,
-                        &client_feedback_tx,
-                        &main_feedback_stream,
-                        &feedback_config,
+                        &_feedback_tx,
+                        &led_packet_tx,
                     )
                     .await
                     {
@@ -635,8 +574,7 @@ impl InternalChuniioProxyServer {
         protocol_state: &Arc<RwLock<ChuniProtocolState>>,
         input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
         _feedback_tx: &mpsc::UnboundedSender<ChuniFeedbackEvent>,
-        main_feedback_stream: &FeedbackEventStream,
-        feedback_config: &Option<ChuniIoRgbConfig>,
+        led_packet_tx: &mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> Result<Option<ChuniMessage>, Box<dyn std::error::Error + Send + Sync>> {
         match message {
             ChuniMessage::JvsPoll => {
@@ -696,166 +634,130 @@ impl InternalChuniioProxyServer {
                 Ok(Some(ChuniMessage::Pong)) // Send immediate ACK to prevent game from waiting
             }
             ChuniMessage::SliderLedUpdate { rgb_data } => {
-                // debug!(
-                //     "Client {} slider LED update: {} bytes",
-                //     client_id,
-                //     rgb_data.len()
-                // );
+                debug!(
+                    "Client {} slider LED update: {} bytes",
+                    client_id,
+                    rgb_data.len()
+                );
 
-                // Route to feedback system (board 2 = slider)
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-
-                let device_id = "chuniio_board_2".to_string();
-                let mut packet = FeedbackEventPacket {
-                    device_id,
-                    timestamp,
-                    events: Vec::new(),
-                };
-
-                // Reverse the order of 3-byte LED blocks
+                // This is board 2
+                let board = 2;
                 let mut led_blocks: Vec<&[u8]> = rgb_data.chunks(3).collect();
                 led_blocks.reverse();
-                let total_leds = led_blocks.len();
-                let clamp_leds = feedback_config
-                    .as_ref()
-                    .map(|config| config.slider_clamp_lights as usize)
-                    .unwrap_or(total_leds);
-                let led_offset = feedback_config
-                    .as_ref()
-                    .map(|config| config.slider_id_offset as u8)
-                    .unwrap_or(0);
 
-                // If clamping, only take every other LED (matching chuni_jvs)
-                let led_indices: Vec<usize> = if clamp_leds < total_leds {
-                    (0..clamp_leds)
-                        .map(|i| i * 2)
-                        .filter(|&i| i < total_leds)
-                        .collect()
-                } else {
-                    (0..total_leds).collect()
-                };
-
-                for (out_idx, &led_index) in led_indices.iter().enumerate() {
-                    if let Some(bgr_chunk) = led_blocks.get(led_index) {
-                        if bgr_chunk.len() == 3 {
-                            let r = bgr_chunk[2];
-                            let g = bgr_chunk[0];
-                            let b = bgr_chunk[1];
-                            let led_event = FeedbackEvent::Led(LedEvent::Set {
-                                led_id: led_offset + out_idx as u8,
-                                on: r > 0 || g > 0 || b > 0,
-                                brightness: Some(((r as u16 + g as u16 + b as u16) / 3) as u8),
-                                rgb: Some((r, g, b)),
-                            });
-                            packet.events.push(led_event);
+                let rgb_values: Vec<Rgb> = led_blocks
+                    .iter()
+                    .map(|brg_chunk| {
+                        if brg_chunk.len() == 3 {
+                            Rgb {
+                                r: brg_chunk[1],
+                                g: brg_chunk[2],
+                                b: brg_chunk[0],
+                            }
+                        } else {
+                            Rgb { r: 0, g: 0, b: 0 }
                         }
-                    }
-                }
+                    })
+                    .collect();
 
-                // Send feedback packet to main feedback stream
-                if !packet.events.is_empty() {
-                    let event_count = packet.events.len();
-                    if let Err(e) = main_feedback_stream.send(packet).await {
-                        warn!("Failed to send slider LED feedback packet: {}", e);
-                    } else {
-                        debug!("Sent slider LED feedback with {} LEDs", event_count);
+                if rgb_values.len() == 31 {
+                    let data = LedBoardData::Slider(rgb_values.try_into().unwrap());
+                    let packet = ChuniLedDataPacket { board, data };
+                    if let Err(e) = led_packet_tx.send(packet) {
+                        warn!("Failed to send slider LED packet: {}", e);
                     }
+                } else {
+                    warn!(
+                        "Incorrect data length for slider update: got {} bytes, expected 93",
+                        rgb_data.len()
+                    );
                 }
 
                 // Send immediate ACK to prevent game from waiting
                 Ok(Some(ChuniMessage::Pong))
             }
             ChuniMessage::LedUpdate { board, rgb_data } => {
-                // Only process board 2 (slider) - ignore other boards
                 if board != 2 {
-                    // debug!("Ignoring LED update for non-slider board {}", board);
+                    // warn!("LedUpdate: Only board 2 (slider) is supported for now, got board {}", board);
                     return Ok(Some(ChuniMessage::Pong));
                 }
+                trace!(
+                    target: crate::PACKET_PROCESSING_TARGET,
+                    "Client {} LED board update: board={}, {} bytes",
+                    client_id,
+                    board,
+                    rgb_data.len()
+                );
 
-                // debug!(
-                //     target: crate::
-                //     "Client {} LED board update: board={}, {} bytes",
-                //     client_id,
-                //     board,
-                //     rgb_data.len()
-                // );
-
-                // Route to feedback system (only board 2 = slider)
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-
-                let device_id = format!("chuniio_board_{}", board);
-                let mut packet = FeedbackEventPacket {
-                    device_id,
-                    timestamp,
-                    events: Vec::new(),
-                };
-
-                // Reverse the order of 3-byte LED blocks
                 let mut led_blocks: Vec<&[u8]> = rgb_data.chunks(3).collect();
-                led_blocks.reverse();
-                let total_leds = led_blocks.len();
-                let clamp_leds = feedback_config
-                    .as_ref()
-                    .map(|config| config.slider_clamp_lights as usize)
-                    .unwrap_or(total_leds);
-                let led_offset = feedback_config
-                    .as_ref()
-                    .map(|config| config.slider_id_offset as u8)
-                    .unwrap_or(0);
-
-                // If clamping, only take every other LED (matching chuni_jvs)
-                let led_indices: Vec<usize> = if clamp_leds < total_leds {
-                    (0..clamp_leds)
-                        .map(|i| i * 2)
-                        .filter(|&i| i < total_leds)
-                        .collect()
-                } else {
-                    (0..total_leds).collect()
-                };
-
-                for (out_idx, &led_index) in led_indices.iter().enumerate() {
-                    if let Some(brg_chunk) = led_blocks.get(led_index) {
-                        if brg_chunk.len() == 3 {
-                            let r = brg_chunk[1];
-                            let g = brg_chunk[2];
-                            let b = brg_chunk[0];
-                            let led_event = FeedbackEvent::Led(LedEvent::Set {
-                                led_id: led_offset + out_idx as u8,
-                                on: r > 0 || g > 0 || b > 0,
-                                brightness: if r > 0 || g > 0 || b > 0 {
-                                    Some(255)
-                                } else {
-                                    Some(0)
-                                },
-                                rgb: Some((r, g, b)), // Store as (R, G, B) tuple
-                            });
-
-                            packet.events.push(led_event);
-                        }
-                    }
+                if board == 2 {
+                    // Only reverse for slider
+                    led_blocks.reverse();
                 }
 
-                // Send feedback packet to main feedback stream
-                if !packet.events.is_empty() {
-                    let event_count = packet.events.len();
-                    if let Err(e) = main_feedback_stream.send(packet).await {
-                        warn!("Failed to send LED board {} feedback packet: {}", board, e);
-                    } else {
-                        // debug!(
-                        //     "Sent LED board {} feedback with {} LEDs",
-                        //     board, event_count
-                        // );
+                let rgb_values: Vec<Rgb> = led_blocks
+                    .iter()
+                    .map(|brg_chunk| {
+                        if brg_chunk.len() == 3 {
+                            Rgb {
+                                r: brg_chunk[1],
+                                g: brg_chunk[2],
+                                b: brg_chunk[0],
+                            }
+                        } else {
+                            Rgb { r: 0, g: 0, b: 0 }
+                        }
+                    })
+                    .collect();
+
+                let rgb_values_len = rgb_values.len();
+                let data = match board {
+                    0 => {
+                        if let Ok(leds) = rgb_values.try_into() {
+                            LedBoardData::BillboardLeft(leds)
+                        } else {
+                            warn!(
+                                "Incorrect data length for billboard 0: got {} LEDs, expected 53",
+                                rgb_values_len
+                            );
+                            return Ok(Some(ChuniMessage::Pong));
+                        }
                     }
+                    1 => {
+                        if let Ok(leds) = rgb_values.try_into() {
+                            LedBoardData::BillboardRight(leds)
+                        } else {
+                            warn!(
+                                "Incorrect data length for billboard 1: got {} LEDs, expected 63",
+                                rgb_values_len
+                            );
+                            return Ok(Some(ChuniMessage::Pong));
+                        }
+                    }
+                    2 => {
+                        if let Ok(leds) = rgb_values.try_into() {
+                            LedBoardData::Slider(leds)
+                        } else {
+                            warn!(
+                                "Incorrect data length for slider: got {} LEDs, expected 31",
+                                rgb_values_len
+                            );
+                            return Ok(Some(ChuniMessage::Pong));
+                        }
+                    }
+                    _ => {
+                        warn!("Invalid board ID for LedUpdate: {}", board);
+                        return Ok(Some(ChuniMessage::Pong));
+                    }
+                };
+
+                let packet = ChuniLedDataPacket { board, data };
+                if let Err(e) = led_packet_tx.send(packet) {
+                    warn!("Failed to send LED board {} packet: {}", board, e);
                 }
 
                 // Send immediate ACK to prevent game from waiting
-                Ok(None)
+                Ok(Some(ChuniMessage::Pong))
             }
             ChuniMessage::Ping => {
                 info!("Client {} ping received, sending pong", client_id);
@@ -932,11 +834,12 @@ mod tests {
     async fn test_server_creation() {
         let input_stream = InputEventStream::new();
         let feedback_stream = FeedbackEventStream::new();
+        let (led_packet_tx, _led_packet_rx) = mpsc::unbounded_channel::<ChuniLedDataPacket>();
         let server = ChuniioProxyServer::new(
             Some(PathBuf::from("/tmp/test_chuniio.sock")),
             input_stream,
             feedback_stream,
-            None,
+            led_packet_tx,
         );
 
         assert!(

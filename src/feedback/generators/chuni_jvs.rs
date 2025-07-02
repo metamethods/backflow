@@ -33,9 +33,13 @@
 //! Keep note that the slider LED indexes are in reverse order, so the first LED is on the right side of the slider,
 
 use crate::config::ChuniIoRgbConfig;
-use crate::feedback::FeedbackEvent;
+use crate::feedback::{FeedbackEvent, FeedbackEventPacket, LedEvent};
+use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
+use tokio::sync::mpsc;
+use tracing::{info, warn};
+
 #[allow(dead_code)]
 const LED_PACKET_FRAMING: u8 = 0xE0;
 const LED_PACKET_ESCAPE: u8 = 0xD0;
@@ -286,6 +290,86 @@ impl ChuniLedDataPacket {
     }
 }
 
+/// Create a new channel for sending CHUNITHM LED data packets.
+pub fn create_chuni_led_channel() -> (
+    mpsc::UnboundedSender<ChuniLedDataPacket>,
+    mpsc::UnboundedReceiver<ChuniLedDataPacket>,
+) {
+    mpsc::unbounded_channel()
+}
+
+/// CHUNITHM JVS reader service that listens on a Unix domain socket,
+/// parses JVS-like LED data packets, and sends them to a channel.
+pub struct ChuniJvsReader {
+    socket_path: PathBuf,
+    packet_sender: mpsc::UnboundedSender<ChuniLedDataPacket>,
+}
+
+impl ChuniJvsReader {
+    /// Create a new CHUNITHM JVS reader service.
+    pub fn new(
+        socket_path: PathBuf,
+        packet_sender: mpsc::UnboundedSender<ChuniLedDataPacket>,
+    ) -> Self {
+        Self {
+            socket_path,
+            packet_sender,
+        }
+    }
+
+    /// Start the JVS reader service.
+    pub async fn run(&mut self) -> eyre::Result<()> {
+        info!(
+            "Starting CHUNITHM JVS reader service on socket: {:?}",
+            self.socket_path
+        );
+
+        // Remove existing socket file if it exists
+        if self.socket_path.exists() {
+            std::fs::remove_file(&self.socket_path)?;
+        }
+
+        let listener = UnixListener::bind(&self.socket_path)?;
+        let mut parser = ChuniLedParser::new();
+        let mut buf = vec![0; 4096];
+
+        loop {
+            match listener.accept().await {
+                Ok((mut stream, _addr)) => {
+                    info!("Accepted new JVS client connection");
+                    loop {
+                        match stream.read(&mut buf).await {
+                            Ok(0) => {
+                                info!("JVS client disconnected");
+                                break;
+                            }
+                            Ok(n) => match parser.parse_packets(&buf[..n]) {
+                                Ok(packets) => {
+                                    for packet in packets {
+                                        if let Err(e) = self.packet_sender.send(packet) {
+                                            warn!("Failed to send LED packet: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!("Failed to parse JVS packets: {}", e);
+                                }
+                            },
+                            Err(e) => {
+                                warn!("Failed to read from JVS client: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!("Failed to accept JVS client connection: {}", e);
+                }
+            }
+        }
+    }
+}
+
 /// Board type enumeration for better type safety
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ChuniLedBoard {
@@ -385,8 +469,9 @@ impl Default for ChuniLedParser {
 pub async fn run_chuniio_service(
     config: ChuniIoRgbConfig,
     feedback_stream: crate::feedback::FeedbackEventStream,
+    packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
 ) -> eyre::Result<()> {
-    let mut service = ChuniRgbService::new(config, feedback_stream);
+    let mut service = ChuniRgbService::new(config, feedback_stream, packet_receiver);
     service.run().await
 }
 
@@ -491,8 +576,8 @@ mod tests {
 /// and processes JVS-like LED data packets
 pub struct ChuniRgbService {
     config: ChuniIoRgbConfig,
-    parser: ChuniLedParser,
     feedback_stream: crate::feedback::FeedbackEventStream,
+    packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
 }
 
 impl ChuniRgbService {
@@ -500,241 +585,91 @@ impl ChuniRgbService {
     pub fn new(
         config: ChuniIoRgbConfig,
         feedback_stream: crate::feedback::FeedbackEventStream,
+        packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
     ) -> Self {
         Self {
             config,
-            parser: ChuniLedParser::new(),
             feedback_stream,
+            packet_receiver,
         }
     }
 
-    /// Start the service and listen for LED data on the Unix domain socket
+    /// Start the RGB feedback service
     pub async fn run(&mut self) -> eyre::Result<()> {
-        tracing::info!(
-            "Starting CHUNITHM RGB service listening on: {:?}",
-            self.config.socket_path
-        );
-
-        // Remove socket file if it exists
-        if self.config.socket_path.exists() {
-            std::fs::remove_file(&self.config.socket_path)?;
-            tracing::debug!("Removed existing socket file");
-        }
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = self.config.socket_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        let listener = UnixListener::bind(&self.config.socket_path)?;
-        tracing::info!("CHUNITHM RGB service bound to socket, waiting for connections...");
-
-        loop {
-            match listener.accept().await {
-                Ok((stream, _addr)) => {
-                    tracing::info!("New CHUNITHM RGB client connected");
-                    if let Err(e) = self.handle_client(stream).await {
-                        tracing::error!("Error handling CHUNITHM RGB client: {}", e);
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Error accepting CHUNITHM RGB connection: {}", e);
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                }
+        info!("Starting CHUNITHM RGB feedback service");
+        while let Some(packet) = self.packet_receiver.recv().await {
+            if let Err(e) = self.process_packet(packet).await {
+                warn!("Failed to process LED packet: {}", e);
             }
         }
-    }
-
-    /// Handle a single client connection
-    async fn handle_client(&mut self, mut stream: tokio::net::UnixStream) -> eyre::Result<()> {
-        let mut buffer = vec![0u8; 4096];
-        let mut accumulated_data = Vec::new();
-
-        loop {
-            match stream.read(&mut buffer).await {
-                Ok(0) => {
-                    tracing::info!("CHUNITHM RGB client disconnected");
-                    break;
-                }
-                Ok(bytes_read) => {
-                    accumulated_data.extend_from_slice(&buffer[..bytes_read]);
-
-                    // Try to parse packets from accumulated data
-                    match self.parser.parse_packets(&accumulated_data) {
-                        Ok(packets) => {
-                            for packet in packets {
-                                self.process_led_packet(&packet).await?;
-                            }
-                            // Clear processed data - in a real implementation, you'd want to
-                            // track how much data was consumed and only clear that portion
-                            accumulated_data.clear();
-                        }
-                        Err(e) => {
-                            tracing::debug!("Failed to parse LED packet: {}", e);
-                            // Don't clear data immediately in case we need more bytes
-                            // Only clear if buffer gets too large
-                            if accumulated_data.len() > 8192 {
-                                tracing::warn!(
-                                    "Clearing large accumulated buffer due to parse errors"
-                                );
-                                accumulated_data.clear();
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Error reading from CHUNITHM RGB client: {}", e);
-                    break;
-                }
-            }
-        }
-
+        info!("CHUNITHM RGB feedback service stopped");
         Ok(())
     }
 
-    /// Process a single LED packet and generate feedback events
-    async fn process_led_packet(&mut self, packet: &ChuniLedDataPacket) -> eyre::Result<()> {
-        tracing::trace!(
-            target: crate::PACKET_PROCESSING_TARGET,
-            "Processing LED packet for board {} with {} LEDs",
-            packet.board,
-            packet.led_count()
-        );
+    /// Process a single LED data packet
+    async fn process_packet(&self, packet: ChuniLedDataPacket) -> eyre::Result<()> {
+        let board_id = packet.board;
+        let device_id = format!("chuni_jvs_board_{}", board_id);
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
 
-        let (device_id, events) = match packet.board {
-            0 => (
-                "chunithm_billboard_left".to_string(),
-                self.generate_billboard_feedback_events(packet, 0)?,
-            ),
-            1 => (
-                "chunithm_billboard_right".to_string(),
-                self.generate_billboard_feedback_events(packet, 1)?,
-            ),
-            2 => (
-                "chunithm_slider".to_string(),
-                self.generate_slider_feedback_events(packet)?,
-            ),
-            _ => {
-                tracing::warn!("Unknown board ID {}, skipping packet", packet.board);
-                return Ok(());
-            }
+        let events = match packet.data {
+            LedBoardData::Slider(leds) => self.process_slider_leds(leds),
+            LedBoardData::BillboardLeft(leds) => self.process_billboard_leds(leds.to_vec(), 0),
+            LedBoardData::BillboardRight(leds) => self.process_billboard_leds(leds.to_vec(), 1),
         };
 
-        // Send all LED events in one packet - this is more efficient for the web UI
-        // which can batch process all the LED updates at once
         if !events.is_empty() {
-            let event_count = events.len();
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
-
-            let feedback_packet = crate::feedback::FeedbackEventPacket {
+            let feedback_packet = FeedbackEventPacket {
                 device_id,
                 timestamp,
-                events, // Send all LED events together for better performance
+                events,
             };
-
             if let Err(e) = self.feedback_stream.send(feedback_packet).await {
-                tracing::error!("Failed to send feedback packet: {}", e);
-            } else {
-                tracing::trace!(
-                    target: crate::PACKET_PROCESSING_TARGET,
-                    "Successfully sent feedback packet with {} LED events for board {}",
-                    event_count,
-                    packet.board
-                );
+                warn!("Failed to send feedback packet: {}", e);
             }
         }
 
         Ok(())
     }
 
-    /// Generate feedback events specifically for slider LED data
-    fn generate_slider_feedback_events(
-        &self,
-        packet: &ChuniLedDataPacket,
-    ) -> eyre::Result<Vec<FeedbackEvent>> {
-        let mut events = Vec::new();
+    /// Process slider LEDs, applying clamping if configured
+    fn process_slider_leds(&self, leds: [Rgb; 31]) -> Vec<FeedbackEvent> {
+        let zones = self.config.slider_clamp_lights as usize;
+        let clamped_leds = if zones > 0 && zones < 31 {
+            ChuniLedDataPacket::clamp_slider_to_zones(leds, zones)
+        } else {
+            leds.to_vec()
+        };
 
-        if let LedBoardData::Slider(slider_leds) = &packet.data {
-            // Apply clamping if configured
-            let processed_leds = if self.config.slider_clamp_lights < 31 {
-                ChuniLedDataPacket::clamp_slider_to_zones(
-                    *slider_leds,
-                    self.config.slider_clamp_lights as usize,
-                )
-            } else {
-                slider_leds.to_vec()
-            };
-
-            // Generate LED events with ID offset
-            for (index, rgb) in processed_leds.iter().enumerate() {
-                let led_id = (index as u32 + self.config.slider_id_offset) as u8;
-
-                events.push(FeedbackEvent::Led(crate::feedback::LedEvent::Set {
-                    led_id,
+        clamped_leds
+            .into_iter()
+            .enumerate()
+            .map(|(i, rgb)| {
+                FeedbackEvent::Led(LedEvent::Set {
+                    led_id: (self.config.slider_id_offset as u8) + i as u8,
                     on: rgb.r > 0 || rgb.g > 0 || rgb.b > 0,
                     brightness: Some(rgb.r.max(rgb.g).max(rgb.b)),
                     rgb: Some((rgb.r, rgb.g, rgb.b)),
-                }));
-            }
-
-            tracing::trace!(
-                target: crate::PACKET_PROCESSING_TARGET,
-                "Generated {} LED feedback events for slider (clamped from {} to {} lights, LED ID offset: {})",
-                events.len(),
-                31,
-                self.config.slider_clamp_lights,
-                self.config.slider_id_offset
-            );
-        }
-
-        Ok(events)
+                })
+            })
+            .collect()
     }
 
-    /// Generate feedback events for billboard LED data
-    fn generate_billboard_feedback_events(
-        &self,
-        packet: &ChuniLedDataPacket,
-        board_id: u8,
-    ) -> eyre::Result<Vec<FeedbackEvent>> {
-        let mut events = Vec::new();
-
-        let leds = match &packet.data {
-            LedBoardData::BillboardLeft(leds) => leds.as_slice(),
-            LedBoardData::BillboardRight(leds) => leds.as_slice(),
-            LedBoardData::Slider(_) => {
-                return Err(eyre::eyre!("Expected billboard data, got slider data"));
-            }
-        };
-
-        // Generate LED events with board-specific ID offset
-        let id_offset = match board_id {
-            0 => 0,   // Billboard left starts at LED ID 0
-            1 => 100, // Billboard right starts at LED ID 100
-            _ => return Err(eyre::eyre!("Invalid billboard board ID: {}", board_id)),
-        };
-
-        for (index, rgb) in leds.iter().enumerate() {
-            let led_id = (index + id_offset) as u8;
-
-            events.push(FeedbackEvent::Led(crate::feedback::LedEvent::Set {
-                led_id,
-                on: rgb.r > 0 || rgb.g > 0 || rgb.b > 0,
-                brightness: Some(rgb.r.max(rgb.g).max(rgb.b)),
-                rgb: Some((rgb.r, rgb.g, rgb.b)),
-            }));
-        }
-
-        tracing::trace!(
-            target: crate::PACKET_PROCESSING_TARGET,
-            "Generated {} LED feedback events for billboard board {} (LED ID offset: {})",
-            events.len(),
-            board_id,
-            id_offset
-        );
-
-        Ok(events)
+    /// Process billboard LEDs
+    fn process_billboard_leds(&self, leds: Vec<Rgb>, _board_offset: u8) -> Vec<FeedbackEvent> {
+        leds.into_iter()
+            .enumerate()
+            .map(|(i, rgb)| {
+                FeedbackEvent::Led(LedEvent::Set {
+                    led_id: i as u8, // Adjust ID based on board if needed
+                    on: rgb.r > 0 || rgb.g > 0 || rgb.b > 0,
+                    brightness: Some(rgb.r.max(rgb.g).max(rgb.b)),
+                    rgb: Some((rgb.r, rgb.g, rgb.b)),
+                })
+            })
+            .collect()
     }
 }

@@ -5,10 +5,12 @@
 use crate::config::AppConfig;
 use crate::device_filter::DeviceFilter;
 use crate::feedback::FeedbackEventStream;
+use crate::feedback::generators::chuni_jvs::ChuniLedDataPacket;
 use crate::input::{InputBackend, InputEventStream};
 use crate::output::{OutputBackend, OutputBackendType};
 use eyre::Result;
 use std::net::SocketAddr;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// Message streams container for passing around shared streams
@@ -57,6 +59,9 @@ impl Backend {
     pub async fn start(&mut self) -> Result<()> {
         tracing::info!("Starting backend services...");
 
+        let (led_packet_tx, led_packet_rx) =
+            crate::feedback::generators::chuni_jvs::create_chuni_led_channel();
+
         // Start device filter service
         self.start_device_filter_service().await?;
 
@@ -64,10 +69,10 @@ impl Backend {
         self.start_input_services().await?;
 
         // Start output services
-        self.start_output_services().await?;
+        self.start_output_services(led_packet_tx).await?;
 
         // Start feedback services
-        self.start_feedback_services().await?;
+        self.start_feedback_services(led_packet_rx).await?;
 
         tracing::info!("All backend services started successfully");
         Ok(())
@@ -166,7 +171,10 @@ impl Backend {
     }
 
     /// Start output services based on configuration
-    async fn start_output_services(&mut self) -> Result<()> {
+    async fn start_output_services(
+        &mut self,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
+    ) -> Result<()> {
         if self.config.output.uinput.enabled {
             tracing::info!("Starting uinput output backend");
 
@@ -198,7 +206,6 @@ impl Backend {
                 let input_stream = self.streams.transformed_input.clone();
                 let feedback_stream = self.streams.feedback.clone();
                 let socket_path = chuniio_config.socket_path.clone();
-                let feedback_config = self.config.feedback.chuniio.clone();
 
                 let handle = tokio::spawn(async move {
                     let mut output = OutputBackendType::ChuniioProxy(
@@ -206,7 +213,7 @@ impl Backend {
                             Some(socket_path),
                             input_stream,
                             feedback_stream,
-                            feedback_config,
+                            led_packet_tx,
                         ),
                     );
 
@@ -225,8 +232,11 @@ impl Backend {
     }
 
     /// Start feedback services based on configuration
-    async fn start_feedback_services(&mut self) -> Result<()> {
-        // Check if chuniio_proxy is enabled - if so, skip the separate chuniio feedback service
+    async fn start_feedback_services(
+        &mut self,
+        led_packet_rx: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
+    ) -> Result<()> {
+        // Check if chuniio_proxy is enabled
         let chuniio_proxy_enabled = self
             .config
             .output
@@ -238,25 +248,57 @@ impl Backend {
         if let Some(chuniio_config) = &self.config.feedback.chuniio {
             if chuniio_proxy_enabled {
                 tracing::info!(
-                    "Skipping ChuniIO RGB feedback service - chuniio_proxy output backend is handling LED feedback"
-                );
-            } else {
-                tracing::info!(
-                    "Starting ChuniIO RGB feedback service on socket: {:?}",
-                    chuniio_config.socket_path
+                    "Starting unified ChuniIO RGB feedback service (fed by chuniio_proxy)"
                 );
 
+                // Start the unified service that processes packets from chuniio_proxy
                 let config = chuniio_config.clone();
                 let feedback_stream = self.streams.feedback.clone();
 
                 let handle = tokio::spawn(async move {
                     use crate::feedback::generators::chuni_jvs::run_chuniio_service;
-                    if let Err(e) = run_chuniio_service(config, feedback_stream).await {
+                    if let Err(e) =
+                        run_chuniio_service(config, feedback_stream, led_packet_rx).await
+                    {
                         tracing::error!("ChuniIO RGB feedback service error: {}", e);
                     }
                 });
 
                 self.feedback_handles.push(handle);
+            } else {
+                tracing::info!(
+                    "Starting ChuniIO RGB feedback service with JVS reader on socket: {:?}",
+                    chuniio_config.socket_path
+                );
+
+                // Start both the JVS reader and the RGB service
+                let config = chuniio_config.clone();
+                let feedback_stream = self.streams.feedback.clone();
+                let socket_path = chuniio_config.socket_path.clone();
+
+                // Create a new channel for the JVS reader to send packets
+                let (jvs_led_tx, jvs_led_rx) =
+                    crate::feedback::generators::chuni_jvs::create_chuni_led_channel();
+
+                // Start JVS reader
+                let jvs_handle = tokio::spawn(async move {
+                    use crate::feedback::generators::chuni_jvs::ChuniJvsReader;
+                    let mut reader = ChuniJvsReader::new(socket_path, jvs_led_tx);
+                    if let Err(e) = reader.run().await {
+                        tracing::error!("ChuniIO JVS reader error: {}", e);
+                    }
+                });
+
+                // Start RGB service
+                let rgb_handle = tokio::spawn(async move {
+                    use crate::feedback::generators::chuni_jvs::run_chuniio_service;
+                    if let Err(e) = run_chuniio_service(config, feedback_stream, jvs_led_rx).await {
+                        tracing::error!("ChuniIO RGB feedback service error: {}", e);
+                    }
+                });
+
+                self.feedback_handles.push(jvs_handle);
+                self.feedback_handles.push(rgb_handle);
             }
         }
 
