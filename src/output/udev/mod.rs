@@ -226,6 +226,17 @@ impl UdevOutput {
     }
 
     async fn handle_keyboard_event(&mut self, event: KeyboardEvent) -> Result<()> {
+        // Filter out CHUNIIO_ prefixed keys - they should go to chuniio backend
+        let key = match &event {
+            KeyboardEvent::KeyPress { key } => key,
+            KeyboardEvent::KeyRelease { key } => key,
+        };
+
+        if key.starts_with("CHUNIIO_") {
+            tracing::debug!("Skipping CHUNIIO_ prefixed key in udev backend: {}", key);
+            return Ok(());
+        }
+
         let Some(kb_device) = self.backend.get_device_mut("keyboard") else {
             tracing::warn!("No keyboard device available");
             return Ok(());

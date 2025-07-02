@@ -83,6 +83,7 @@
 //!
 //! All multi-byte integers are transmitted in little-endian format.
 
+use crate::config::ChuniIoRgbConfig;
 use crate::feedback::FeedbackEventStream;
 use crate::input::{InputEvent, InputEventPacket, InputEventStream, KeyboardEvent};
 use crate::output::OutputBackend;
@@ -94,7 +95,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{RwLock, mpsc};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Default socket path for chuniio proxy
 const DEFAULT_SOCKET_PATH: &str = "/tmp/backflow_chuniio.sock";
@@ -106,6 +107,13 @@ pub struct ChuniioProxyServer {
     next_client_id: Arc<RwLock<u64>>,
     input_stream: InputEventStream,
     feedback_stream: FeedbackEventStream,
+    feedback_config: Option<ChuniIoRgbConfig>,
+    /// Optional sender for LED packets to ChuniRgbService (bypasses custom conversion)
+    led_packet_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<
+            crate::feedback::generators::chuni_jvs::ChuniLedDataPacket,
+        >,
+    >,
 }
 
 impl ChuniioProxyServer {
@@ -114,6 +122,28 @@ impl ChuniioProxyServer {
         socket_path: Option<PathBuf>,
         input_stream: InputEventStream,
         feedback_stream: FeedbackEventStream,
+        feedback_config: Option<ChuniIoRgbConfig>,
+    ) -> Self {
+        Self::new_with_led_channel(
+            socket_path,
+            input_stream,
+            feedback_stream,
+            feedback_config,
+            None,
+        )
+    }
+
+    /// Create a new chuniio proxy server with LED packet channel for direct integration with ChuniRgbService
+    pub fn new_with_led_channel(
+        socket_path: Option<PathBuf>,
+        input_stream: InputEventStream,
+        feedback_stream: FeedbackEventStream,
+        feedback_config: Option<ChuniIoRgbConfig>,
+        led_packet_tx: Option<
+            tokio::sync::mpsc::UnboundedSender<
+                crate::feedback::generators::chuni_jvs::ChuniLedDataPacket,
+            >,
+        >,
     ) -> Self {
         let socket_path = socket_path.unwrap_or_else(|| {
             // Try to use user runtime directory, fallback to /tmp
@@ -133,6 +163,8 @@ impl ChuniioProxyServer {
             next_client_id: Arc::new(RwLock::new(0)),
             input_stream,
             feedback_stream,
+            feedback_config,
+            led_packet_tx,
         }
     }
 }
@@ -151,6 +183,9 @@ impl OutputBackend for ChuniioProxyServer {
         let next_client_id = Arc::clone(&self.next_client_id);
         let input_tx_clone = input_tx.clone();
         let feedback_tx_clone = feedback_tx.clone();
+        let main_feedback_stream = self.feedback_stream.clone();
+        let feedback_config = self.feedback_config.clone();
+        let led_packet_tx = self.led_packet_tx.clone();
 
         let server_handle = tokio::spawn(async move {
             let mut server = InternalChuniioProxyServer {
@@ -159,6 +194,9 @@ impl OutputBackend for ChuniioProxyServer {
                 next_client_id,
                 input_tx: input_tx_clone,
                 feedback_tx: feedback_tx_clone,
+                main_feedback_stream,
+                feedback_config,
+                led_packet_tx,
             };
             if let Err(e) = server.start_server().await {
                 tracing::error!("Chuniio proxy server error: {}", e);
@@ -208,9 +246,12 @@ impl OutputBackend for ChuniioProxyServer {
                 chuni_event = input_rx.recv() => {
                     match chuni_event {
                         Some(event) => {
+                            info!("Processing chuniio event in proxy: {:?}", event);
                             // Update internal state
                             let mut state = self.protocol_state.write().await;
                             state.process_input_event(event);
+                            info!("Updated proxy state - opbtn: {}, beams: {}, coins: {}",
+                                  state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter);
                         }
                         None => {
                             tracing::debug!("Chuniio input channel closed");
@@ -241,6 +282,13 @@ impl ChuniioProxyServer {
         feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         next_client_id: Arc<RwLock<u64>>,
+        main_feedback_stream: FeedbackEventStream,
+        feedback_config: Option<ChuniIoRgbConfig>,
+        led_packet_tx: Option<
+            tokio::sync::mpsc::UnboundedSender<
+                crate::feedback::generators::chuni_jvs::ChuniLedDataPacket,
+            >,
+        >,
     ) -> InternalChuniioProxyServer {
         InternalChuniioProxyServer {
             socket_path,
@@ -248,6 +296,9 @@ impl ChuniioProxyServer {
             next_client_id,
             input_tx,
             feedback_tx,
+            main_feedback_stream,
+            feedback_config,
+            led_packet_tx,
         }
     }
 
@@ -257,20 +308,41 @@ impl ChuniioProxyServer {
         packet: InputEventPacket,
         input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
     ) -> eyre::Result<()> {
+        debug!(
+            "Processing input packet from device {}: {} events",
+            packet.device_id,
+            packet.events.len()
+        );
         for event in packet.events {
             match event {
                 InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+                    // Only process CHUNIIO_ prefixed keys in chuniio backend
+                    if !key.starts_with("CHUNIIO_") {
+                        debug!("Skipping non-CHUNIIO key in chuniio backend: {}", key);
+                        continue;
+                    }
+                    debug!("Processing key press: {}", key);
                     if let Some(chuni_event) = self.keyboard_to_chuniio_event(&key, true).await {
+                        debug!("Sending chuniio event to proxy: {:?}", chuni_event);
                         let _ = input_tx.send(chuni_event);
                     }
                 }
                 InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
+                    // Only process CHUNIIO_ prefixed keys in chuniio backend
+                    if !key.starts_with("CHUNIIO_") {
+                        debug!("Skipping non-CHUNIIO key in chuniio backend: {}", key);
+                        continue;
+                    }
+                    debug!("Processing key release: {}", key);
                     if let Some(chuni_event) = self.keyboard_to_chuniio_event(&key, false).await {
+                        debug!("Sending chuniio event to proxy: {:?}", chuni_event);
                         let _ = input_tx.send(chuni_event);
                     }
                 }
                 // Handle other input types as needed
-                _ => {}
+                _ => {
+                    debug!("Ignoring non-keyboard event: {:?}", event);
+                }
             }
         }
         Ok(())
@@ -282,7 +354,8 @@ impl ChuniioProxyServer {
         key: &str,
         pressed: bool,
     ) -> Option<ChuniInputEvent> {
-        match key {
+        info!("Converting keyboard event: {} -> {}", key, pressed);
+        let event = match key {
             "CHUNIIO_COIN" => Some(ChuniInputEvent::CoinInsert),
             "CHUNIIO_TEST" => Some(ChuniInputEvent::OperatorButton {
                 button: CHUNI_IO_OPBTN_TEST,
@@ -321,7 +394,15 @@ impl ChuniioProxyServer {
                 }
             }
             _ => None,
+        };
+
+        if let Some(ref evt) = event {
+            info!("Generated chuniio event: {:?}", evt);
+        } else {
+            warn!("No chuniio event generated for key: {}", key);
         }
+
+        event
     }
 }
 
@@ -332,24 +413,76 @@ struct InternalChuniioProxyServer {
     next_client_id: Arc<RwLock<u64>>,
     input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
     feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+    main_feedback_stream: FeedbackEventStream,
+    feedback_config: Option<ChuniIoRgbConfig>,
+    /// Optional sender for LED packets to ChuniRgbService (bypasses custom conversion)
+    led_packet_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<
+            crate::feedback::generators::chuni_jvs::ChuniLedDataPacket,
+        >,
+    >,
 }
 
 impl InternalChuniioProxyServer {
-    /// Create internal server instance
-    fn new(
-        socket_path: PathBuf,
-        protocol_state: Arc<RwLock<ChuniProtocolState>>,
-        next_client_id: Arc<RwLock<u64>>,
-        input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
-        feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
-    ) -> Self {
-        Self {
-            socket_path,
-            protocol_state,
-            next_client_id,
-            input_tx,
-            feedback_tx,
-        }
+    /// Convert raw RGB data to ChuniLedDataPacket for sending to ChuniRgbService
+    fn create_led_packet(
+        board: u8,
+        rgb_data: &[u8],
+    ) -> eyre::Result<crate::feedback::generators::chuni_jvs::ChuniLedDataPacket> {
+        use crate::feedback::generators::chuni_jvs::{ChuniLedDataPacket, LedBoardData, Rgb};
+
+        // Convert BGR format from game to RGB
+        let rgb_vec: Vec<Rgb> = rgb_data
+            .chunks(3)
+            .filter(|chunk| chunk.len() == 3)
+            .map(|chunk| Rgb {
+                r: chunk[2], // R is at index 2 (BGR format from game)
+                g: chunk[1], // G is at index 1
+                b: chunk[0], // B is at index 0
+            })
+            .collect();
+
+        let data = match board {
+            0 => {
+                if rgb_vec.len() < 53 {
+                    return Err(eyre::eyre!(
+                        "Not enough RGB data for billboard left: {} LEDs",
+                        rgb_vec.len()
+                    ));
+                }
+                let leds: [Rgb; 53] = rgb_vec[..53]
+                    .try_into()
+                    .map_err(|_| eyre::eyre!("Failed to convert to billboard left array"))?;
+                LedBoardData::BillboardLeft(leds)
+            }
+            1 => {
+                if rgb_vec.len() < 63 {
+                    return Err(eyre::eyre!(
+                        "Not enough RGB data for billboard right: {} LEDs",
+                        rgb_vec.len()
+                    ));
+                }
+                let leds: [Rgb; 63] = rgb_vec[..63]
+                    .try_into()
+                    .map_err(|_| eyre::eyre!("Failed to convert to billboard right array"))?;
+                LedBoardData::BillboardRight(leds)
+            }
+            2 => {
+                if rgb_vec.len() < 31 {
+                    return Err(eyre::eyre!(
+                        "Not enough RGB data for slider: {} LEDs",
+                        rgb_vec.len()
+                    ));
+                }
+                let leds: [Rgb; 31] = rgb_vec[..31]
+                    .try_into()
+                    .map_err(|_| eyre::eyre!("Failed to convert to slider array"))?;
+                LedBoardData::Slider(leds)
+            }
+            _ => return Err(eyre::eyre!("Invalid board ID: {}", board)),
+        };
+
+        Ok(ChuniLedDataPacket { board, data })
     }
 
     /// Start the internal server
@@ -389,6 +522,9 @@ impl InternalChuniioProxyServer {
                     let protocol_state = Arc::clone(&self.protocol_state);
                     let input_tx = self.input_tx.clone();
                     let feedback_tx = self.feedback_tx.clone();
+                    let main_feedback_stream = self.main_feedback_stream.clone();
+                    let feedback_config = self.feedback_config.clone();
+                    let led_packet_tx = self.led_packet_tx.clone();
 
                     tokio::spawn(async move {
                         if let Err(e) = Self::handle_client(
@@ -397,6 +533,9 @@ impl InternalChuniioProxyServer {
                             protocol_state,
                             input_tx,
                             feedback_tx,
+                            main_feedback_stream,
+                            feedback_config,
+                            led_packet_tx,
                         )
                         .await
                         {
@@ -419,7 +558,19 @@ impl InternalChuniioProxyServer {
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
         _feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        main_feedback_stream: FeedbackEventStream,
+        feedback_config: Option<ChuniIoRgbConfig>,
+        led_packet_tx: Option<
+            tokio::sync::mpsc::UnboundedSender<
+                crate::feedback::generators::chuni_jvs::ChuniLedDataPacket,
+            >,
+        >,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        info!(
+            "Client {} connected and starting packet processing",
+            client_id
+        );
+
         let (reader, writer) = stream.into_split();
         let mut reader = tokio::io::BufReader::new(reader);
         let writer = Arc::new(tokio::sync::Mutex::new(writer));
@@ -432,12 +583,27 @@ impl InternalChuniioProxyServer {
         let writer_clone = Arc::clone(&writer);
         let feedback_task = tokio::spawn(async move {
             while let Some(feedback_event) = client_feedback_rx.recv().await {
+                info!(
+                    "Client {} received feedback event: {:?}",
+                    client_id, feedback_event
+                );
                 if let Some(message) = Self::feedback_event_to_message(feedback_event) {
+                    info!(
+                        "Client {} sending feedback message: {:?}",
+                        client_id, message
+                    );
                     let mut writer_guard = writer_clone.lock().await;
                     if let Err(e) = message.write_to(&mut *writer_guard).await {
                         warn!("Failed to send feedback to client {}: {}", client_id, e);
                         break;
+                    } else {
+                        info!("Client {} feedback message sent successfully", client_id);
                     }
+                } else {
+                    warn!(
+                        "Client {} could not convert feedback event to message",
+                        client_id
+                    );
                 }
             }
         });
@@ -446,25 +612,40 @@ impl InternalChuniioProxyServer {
         loop {
             match ChuniMessage::from_reader(&mut reader).await {
                 Ok(message) => {
+                    // Log all incoming packets except JvsPoll and CoinCounterRead for debugging
+                    match &message {
+                        ChuniMessage::JvsPoll | ChuniMessage::CoinCounterRead => {}
+                        _ => info!("Client {} received packet: {:?}", client_id, message),
+                    }
+
                     match Self::handle_client_message(
                         client_id,
                         message,
                         &protocol_state,
                         &input_tx,
                         &client_feedback_tx,
+                        &main_feedback_stream,
+                        &feedback_config,
+                        &led_packet_tx,
                     )
                     .await
                     {
                         Ok(Some(response)) => {
+                            // Log outgoing response
+                            // info!("Client {} sending response: {:?}", client_id, response);
+
                             // Send response back to client
                             let mut writer_guard = writer.lock().await;
                             if let Err(e) = response.write_to(&mut *writer_guard).await {
                                 warn!("Failed to send response to client {}: {}", client_id, e);
                                 break;
+                            } else {
+                                // info!("Client {} response sent successfully", client_id);
                             }
                         }
                         Ok(None) => {
                             // No response needed
+                            info!("Client {} no response needed for packet", client_id);
                         }
                         Err(e) => {
                             warn!("Error handling message from client {}: {}", client_id, e);
@@ -473,7 +654,7 @@ impl InternalChuniioProxyServer {
                 }
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                        info!("Client {} disconnected", client_id);
+                        info!("Client {} disconnected cleanly", client_id);
                     } else {
                         warn!("Error reading from client {}: {}", client_id, e);
                     }
@@ -482,36 +663,91 @@ impl InternalChuniioProxyServer {
             }
         }
 
+        info!("Client {} packet processing ended, cleaning up", client_id);
         feedback_task.abort();
         Ok(())
     }
 
+    // /// Send feedback event to all connected clients
+    // pub async fn send_feedback(
+    //     &self,
+    //     event: ChuniFeedbackEvent,
+    // ) -> Result<(), mpsc::error::SendError<ChuniFeedbackEvent>> {
+    //     self.feedback_tx.send(event)
+    // }
+
+    // /// Send input event (for external use)
+    // pub async fn send_input(
+    //     &self,
+    //     event: ChuniInputEvent,
+    // ) -> Result<(), mpsc::error::SendError<ChuniInputEvent>> {
+    //     // Update internal state
+    //     {
+    //         let mut state = self.protocol_state.write().await;
+    //         state.process_input_event(event.clone());
+    //     }
+
+    //     // Forward to input handler
+    //     self.input_tx.send(event)
+    // }
+
+    
     /// Handle a message from a client and optionally return a response
     async fn handle_client_message(
-        _client_id: u64,
+        client_id: u64,
         message: ChuniMessage,
         protocol_state: &Arc<RwLock<ChuniProtocolState>>,
         input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
         _feedback_tx: &mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        _main_feedback_stream: &FeedbackEventStream,
+        _feedback_config: &Option<ChuniIoRgbConfig>,
+        led_packet_tx: &Option<
+            tokio::sync::mpsc::UnboundedSender<
+                crate::feedback::generators::chuni_jvs::ChuniLedDataPacket,
+            >,
+        >,
     ) -> Result<Option<ChuniMessage>, Box<dyn std::error::Error + Send + Sync>> {
         match message {
             ChuniMessage::JvsPoll => {
                 // Return current JVS state
                 let state = protocol_state.read().await;
-                Ok(Some(ChuniMessage::JvsPollResponse {
+                let response = ChuniMessage::JvsPollResponse {
                     opbtn: state.jvs_state.opbtn,
                     beams: state.jvs_state.beams,
-                }))
+                };
+                // info!(
+                //     "Client {} JVS poll response: opbtn={}, beams={}",
+                //     client_id, state.jvs_state.opbtn, state.jvs_state.beams
+                // );
+                Ok(Some(response))
             }
             ChuniMessage::CoinCounterRead => {
                 // Return current coin count
                 let state = protocol_state.read().await;
-                Ok(Some(ChuniMessage::CoinCounterReadResponse {
+                let response = ChuniMessage::CoinCounterReadResponse {
                     count: state.coin_counter,
-                }))
+                };
+                // info!(
+                //     "Client {} coin counter response: count={}",
+                //     client_id, state.coin_counter
+                // );
+                Ok(Some(response))
+            }
+            ChuniMessage::SliderStateRead => {
+                // Return current slider state
+                let state = protocol_state.read().await;
+                let response = ChuniMessage::SliderStateReadResponse {
+                    pressure: state.slider_state.pressure,
+                };
+                // info!(
+                //     "Client {} slider state read response: pressure={:?}",
+                //     client_id, state.slider_state.pressure
+                // );
+                Ok(Some(response))
             }
             ChuniMessage::SliderInput { pressure } => {
                 // Update slider state and send input events
+                info!("Client {} slider input: pressure={:?}", client_id, pressure);
                 {
                     let mut state = protocol_state.write().await;
                     state.slider_state.pressure = pressure;
@@ -526,10 +762,86 @@ impl InternalChuniioProxyServer {
                         });
                     }
                 }
+                Ok(Some(ChuniMessage::Pong)) // Send immediate ACK to prevent game from waiting
+            }
+            ChuniMessage::SliderLedUpdate { rgb_data } => {
+                debug!(
+                    "Client {} slider LED update: {} bytes",
+                    client_id,
+                    rgb_data.len()
+                );
+
+                // Create ChuniLedDataPacket for board 2 (slider) and send to ChuniRgbService if channel exists
+                if let Some(led_tx) = led_packet_tx {
+                    match Self::create_led_packet(2, &rgb_data) {
+                        Ok(packet) => {
+                            if let Err(e) = led_tx.send(packet) {
+                                warn!("Failed to send slider LED packet to ChuniRgbService: {}", e);
+                            } else {
+                                debug!("Sent slider LED packet to ChuniRgbService");
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to create slider LED packet: {}", e);
+                        }
+                    }
+                } else {
+                    // Fallback: send directly to feedback stream (legacy mode)
+                    warn!("LED packet channel not available, LED updates will be ignored");
+                }
+
+                // Send immediate ACK to prevent game from waiting
+                Ok(Some(ChuniMessage::Pong))
+            }
+            ChuniMessage::LedUpdate { board, rgb_data } => {
+                debug!(
+                    "Client {} LED board update: board={}, {} bytes",
+                    client_id,
+                    board,
+                    rgb_data.len()
+                );
+
+                // Create ChuniLedDataPacket and send to ChuniRgbService if channel exists
+                if let Some(led_tx) = led_packet_tx {
+                    match Self::create_led_packet(board, &rgb_data) {
+                        Ok(packet) => {
+                            if let Err(e) = led_tx.send(packet) {
+                                warn!(
+                                    "Failed to send LED board {} packet to ChuniRgbService: {}",
+                                    board, e
+                                );
+                            } else {
+                                debug!("Sent LED board {} packet to ChuniRgbService", board);
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to create LED board {} packet: {}", board, e);
+                        }
+                    }
+                } else {
+                    // Fallback: LED updates will be ignored
+                    warn!(
+                        "LED packet channel not available, LED board {} updates will be ignored",
+                        board
+                    );
+                }
+
+                // Send immediate ACK to prevent game from waiting
+                Ok(Some(ChuniMessage::Pong))
+            }
+            ChuniMessage::Ping => {
+                info!("Client {} ping received, sending pong", client_id);
+                Ok(Some(ChuniMessage::Pong))
+            }
+            ChuniMessage::Pong => {
+                info!("Client {} pong received", client_id);
                 Ok(None)
             }
-            ChuniMessage::Ping => Ok(Some(ChuniMessage::Pong)),
             _ => {
+                info!(
+                    "Client {} received unhandled message: {:?}",
+                    client_id, message
+                );
                 // Other messages are responses or feedback, not handled here
                 Ok(None)
             }
@@ -547,41 +859,6 @@ impl InternalChuniioProxyServer {
             }
         }
     }
-
-    /// Send feedback event to all connected clients
-    pub async fn send_feedback(
-        &self,
-        event: ChuniFeedbackEvent,
-    ) -> Result<(), mpsc::error::SendError<ChuniFeedbackEvent>> {
-        self.feedback_tx.send(event)
-    }
-
-    /// Send input event (for external use)
-    pub async fn send_input(
-        &self,
-        event: ChuniInputEvent,
-    ) -> Result<(), mpsc::error::SendError<ChuniInputEvent>> {
-        // Update internal state
-        {
-            let mut state = self.protocol_state.write().await;
-            state.process_input_event(event.clone());
-        }
-
-        // Forward to input handler
-        self.input_tx.send(event)
-    }
-}
-
-/// Helper function to create channels for the proxy server
-pub fn create_chuniio_channels() -> (
-    mpsc::UnboundedSender<ChuniInputEvent>,
-    mpsc::UnboundedReceiver<ChuniInputEvent>,
-    mpsc::UnboundedSender<ChuniFeedbackEvent>,
-    mpsc::UnboundedReceiver<ChuniFeedbackEvent>,
-) {
-    let (input_tx, input_rx) = mpsc::unbounded_channel();
-    let (feedback_tx, feedback_rx) = mpsc::unbounded_channel();
-    (input_tx, input_rx, feedback_tx, feedback_rx)
 }
 
 #[cfg(test)]
@@ -596,6 +873,7 @@ mod tests {
             Some(PathBuf::from("/tmp/test_chuniio.sock")),
             input_stream,
             feedback_stream,
+            None,
         );
 
         assert!(

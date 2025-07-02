@@ -61,6 +61,10 @@ pub enum MessageType {
     Ping = 0x08,
     /// Pong response to ping
     Pong = 0x09,
+    /// Slider state read request
+    SliderStateRead = 0x0A,
+    /// Slider state read response
+    SliderStateReadResponse = 0x0B,
 }
 
 impl TryFrom<u8> for MessageType {
@@ -77,6 +81,8 @@ impl TryFrom<u8> for MessageType {
             0x07 => Ok(MessageType::LedUpdate),
             0x08 => Ok(MessageType::Ping),
             0x09 => Ok(MessageType::Pong),
+            0x0A => Ok(MessageType::SliderStateRead),
+            0x0B => Ok(MessageType::SliderStateReadResponse),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Unknown message type: {:#04x}", value),
@@ -239,6 +245,12 @@ pub enum ChuniMessage {
     SliderInput {
         pressure: [u8; CHUNI_SLIDER_REGIONS],
     },
+    /// Slider state read request (from game)
+    SliderStateRead,
+    /// Slider state read response (to game)
+    SliderStateReadResponse {
+        pressure: [u8; CHUNI_SLIDER_REGIONS],
+    },
     /// Slider LED update (to proxy)
     SliderLedUpdate { rgb_data: Vec<u8> },
     /// LED board update (to proxy)
@@ -272,6 +284,13 @@ impl ChuniMessage {
             }
             ChuniMessage::SliderInput { pressure } => {
                 bytes.push(MessageType::SliderInput as u8);
+                bytes.extend_from_slice(pressure);
+            }
+            ChuniMessage::SliderStateRead => {
+                bytes.push(MessageType::SliderStateRead as u8);
+            }
+            ChuniMessage::SliderStateReadResponse { pressure } => {
+                bytes.push(MessageType::SliderStateReadResponse as u8);
                 bytes.extend_from_slice(pressure);
             }
             ChuniMessage::SliderLedUpdate { rgb_data } => {
@@ -317,6 +336,12 @@ impl ChuniMessage {
                 let mut pressure = [0u8; CHUNI_SLIDER_REGIONS];
                 reader.read_exact(&mut pressure).await?;
                 Ok(ChuniMessage::SliderInput { pressure })
+            }
+            MessageType::SliderStateRead => Ok(ChuniMessage::SliderStateRead),
+            MessageType::SliderStateReadResponse => {
+                let mut pressure = [0u8; CHUNI_SLIDER_REGIONS];
+                reader.read_exact(&mut pressure).await?;
+                Ok(ChuniMessage::SliderStateReadResponse { pressure })
             }
             MessageType::SliderLedUpdate => {
                 let len = reader.read_u8().await? as usize;
