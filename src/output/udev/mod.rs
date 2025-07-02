@@ -19,7 +19,8 @@ use uinput::event::controller::Mouse;
 use uinput::event::keyboard::Key;
 
 use crate::input::{
-    InputEvent, InputEventPacket, InputEventStream, JoystickEvent, KeyboardEvent, PointerEvent,
+    InputEvent, InputEventPacket, InputEventReceiver, InputEventStream, JoystickEvent,
+    KeyboardEvent, PointerEvent,
 };
 use crate::output::OutputBackend;
 
@@ -189,8 +190,8 @@ impl UdevOutputBackend {
 
 /// Main udev output implementation
 pub struct UdevOutput {
-    /// Input event stream
-    pub stream: InputEventStream,
+    /// Input event receiver (dedicated for this backend)
+    pub receiver: InputEventReceiver,
     /// Udev backend for managing virtual devices
     pub backend: UdevOutputBackend,
 }
@@ -199,13 +200,13 @@ impl UdevOutput {
     /// Creates a new `UdevOutput` with the given input event stream
     pub fn new(stream: InputEventStream) -> Result<Self> {
         Ok(Self {
-            stream,
+            receiver: stream.subscribe(),
             backend: UdevOutputBackend::new()?,
         })
     }
 
     async fn process_packet(&mut self, packet: InputEventPacket) -> Result<()> {
-        tracing::debug!("Received input event packet: {:?}", packet);
+        tracing::trace!("Received input event packet: {:?}", packet);
 
         for event in packet.events {
             self.handle_event(event).await?;
@@ -440,7 +441,7 @@ impl OutputBackend for UdevOutput {
 
         loop {
             // Use async receive method - much cleaner than try_recv with sleep
-            match self.stream.receive().await {
+            match self.receiver.receive().await {
                 Some(packet) => {
                     if let Err(e) = self.process_packet(packet).await {
                         tracing::error!("Failed to process packet: {}", e);

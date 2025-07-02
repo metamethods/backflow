@@ -108,35 +108,72 @@ impl InputEventPacket {
 /// Represents a stream of input event packets, using tokio mpsc channels for async communication.
 #[derive(Clone)]
 pub struct InputEventStream {
-    /// Sender for input event packets.
-    pub tx: tokio::sync::mpsc::Sender<InputEventPacket>,
-    /// Receiver for input event packets.
-    pub rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<InputEventPacket>>>,
+    /// Broadcast sender for input event packets.
+    pub tx: tokio::sync::broadcast::Sender<InputEventPacket>,
+}
+
+/// A receiver wrapper for InputEventStream that can be used by individual backends
+pub struct InputEventReceiver {
+    /// Receiver for input event packets from the broadcast channel.
+    pub rx: tokio::sync::broadcast::Receiver<InputEventPacket>,
 }
 
 impl InputEventStream {
-    /// Creates a new `InputEventStream` with a tokio mpsc channel.
+    /// Creates a new `InputEventStream` with a tokio broadcast channel.
     pub fn new() -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(100);
-        Self {
-            tx,
-            rx: std::sync::Arc::new(tokio::sync::Mutex::new(rx)),
-        }
+        let (tx, _rx) = tokio::sync::broadcast::channel(1000); // Larger buffer for broadcast
+        Self { tx }
     }
 
-    /// Sends an input event packet through the stream.
+    /// Sends an input event packet through the stream to all subscribers.
     pub async fn send(
         &self,
         packet: InputEventPacket,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<InputEventPacket>> {
-        self.tx.send(packet).await
+    ) -> Result<usize, tokio::sync::broadcast::error::SendError<InputEventPacket>> {
+        self.tx.send(packet)
+    }
+
+    /// Creates a new receiver that will receive all future input event packets.
+    /// Each backend should create its own receiver to avoid competing for messages.
+    pub fn subscribe(&self) -> InputEventReceiver {
+        InputEventReceiver {
+            rx: self.tx.subscribe(),
+        }
     }
 
     /// Receives an input event packet from the stream.
-    /// This is an async method that will await for a packet to be available.
+    /// This is a legacy method for backward compatibility.
+    /// New code should use `subscribe()` to create a dedicated receiver.
     pub async fn receive(&self) -> Option<InputEventPacket> {
-        let mut rx = self.rx.lock().await;
-        rx.recv().await
+        let mut rx = self.tx.subscribe();
+        match rx.recv().await {
+            Ok(packet) => Some(packet),
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                // If lagged, try to get the next message
+                match rx.recv().await {
+                    Ok(packet) => Some(packet),
+                    Err(_) => None,
+                }
+            }
+        }
+    }
+}
+
+impl InputEventReceiver {
+    /// Receives an input event packet from the receiver.
+    pub async fn receive(&mut self) -> Option<InputEventPacket> {
+        match self.rx.recv().await {
+            Ok(packet) => Some(packet),
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                // If lagged, try to get the next message
+                match self.rx.recv().await {
+                    Ok(packet) => Some(packet),
+                    Err(_) => None,
+                }
+            }
+        }
     }
 }
 

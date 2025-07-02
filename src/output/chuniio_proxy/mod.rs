@@ -85,7 +85,9 @@
 
 use crate::feedback::FeedbackEventStream;
 use crate::feedback::generators::chuni_jvs::{ChuniLedDataPacket, LedBoardData, Rgb};
-use crate::input::{InputEvent, InputEventPacket, InputEventStream, KeyboardEvent};
+use crate::input::{
+    InputEvent, InputEventPacket, InputEventReceiver, InputEventStream, KeyboardEvent,
+};
 use crate::output::OutputBackend;
 use crate::protos::chuniio::{
     CHUNI_IO_OPBTN_SERVICE, CHUNI_IO_OPBTN_TEST, ChuniFeedbackEvent, ChuniInputEvent, ChuniMessage,
@@ -105,7 +107,7 @@ pub struct ChuniioProxyServer {
     socket_path: PathBuf,
     protocol_state: Arc<RwLock<ChuniProtocolState>>,
     next_client_id: Arc<RwLock<u64>>,
-    input_stream: InputEventStream,
+    input_receiver: InputEventReceiver,
     feedback_stream: FeedbackEventStream,
     led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
 }
@@ -134,7 +136,7 @@ impl ChuniioProxyServer {
             socket_path,
             protocol_state: Arc::new(RwLock::new(ChuniProtocolState::new())),
             next_client_id: Arc::new(RwLock::new(0)),
-            input_stream,
+            input_receiver: input_stream.subscribe(),
             feedback_stream,
             led_packet_tx,
         }
@@ -196,7 +198,7 @@ impl OutputBackend for ChuniioProxyServer {
         loop {
             tokio::select! {
                 // Handle input events from the application
-                packet = self.input_stream.receive() => {
+                packet = self.input_receiver.receive() => {
                     match packet {
                         Some(packet) => {
                             if let Err(e) = self.process_input_packet(packet, &input_tx).await {
@@ -214,11 +216,11 @@ impl OutputBackend for ChuniioProxyServer {
                 chuni_event = input_rx.recv() => {
                     match chuni_event {
                         Some(event) => {
-                            info!("Processing chuniio event in proxy: {:?}", event);
+                            trace!("Processing chuniio event in proxy: {:?}", event);
                             // Update internal state - use try_write for non-blocking
                             if let Ok(mut state) = self.protocol_state.try_write() {
                                 state.process_input_event(event);
-                                info!("Updated proxy state - opbtn: {}, beams: {}, coins: {}",
+                                trace!("Updated proxy state - opbtn: {}, beams: {}, coins: {}",
                                       state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter);
                             } else {
                                 // If we can't get the lock immediately, skip state update to avoid blocking
@@ -278,38 +280,35 @@ impl ChuniioProxyServer {
             packet.events.len()
         );
         for event in packet.events {
-            match event {
-                InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+            match &event {
+                InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
+                | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
                     // Only process CHUNIIO_ prefixed keys in chuniio backend
                     if !key.starts_with("CHUNIIO_") {
-                        debug!("Skipping non-CHUNIIO key in chuniio backend: {}", key);
+                        trace!("Skipping non-CHUNIIO key in chuniio backend: {}", key);
                         continue;
                     }
-                    debug!("Processing key press: {}", key);
-                    if let Some(chuni_event) = self.keyboard_to_chuniio_event(&key, true).await {
-                        debug!("Sending chuniio event to proxy: {:?}", chuni_event);
+                    let pressed =
+                        matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
+                    trace!(
+                        "Processing key {}: {}",
+                        if pressed { "press" } else { "release" },
+                        key
+                    );
+                    if let Some(chuni_event) = self.parse_chuniio_event(key, pressed).await {
+                        trace!("Sending chuniio event to proxy: {:?}", chuni_event);
                         if let Err(e) = input_tx.try_send(chuni_event) {
-                            warn!("Failed to send chuniio input event (key press): {}", e);
-                        }
-                    }
-                }
-                InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
-                    // Only process CHUNIIO_ prefixed keys in chuniio backend
-                    if !key.starts_with("CHUNIIO_") {
-                        debug!("Skipping non-CHUNIIO key in chuniio backend: {}", key);
-                        continue;
-                    }
-                    debug!("Processing key release: {}", key);
-                    if let Some(chuni_event) = self.keyboard_to_chuniio_event(&key, false).await {
-                        debug!("Sending chuniio event to proxy: {:?}", chuni_event);
-                        if let Err(e) = input_tx.try_send(chuni_event) {
-                            warn!("Failed to send chuniio input event (key release): {}", e);
+                            warn!(
+                                "Failed to send chuniio input event ({}): {}",
+                                if pressed { "key press" } else { "key release" },
+                                e
+                            );
                         }
                     }
                 }
                 // Handle other input types as needed
                 _ => {
-                    debug!("Ignoring non-keyboard event: {:?}", event);
+                    trace!("Ignoring non-keyboard event: {:?}", event);
                 }
             }
         }
@@ -317,55 +316,44 @@ impl ChuniioProxyServer {
     }
 
     /// Convert keyboard events to chuniio events
-    async fn keyboard_to_chuniio_event(
-        &mut self,
-        key: &str,
-        pressed: bool,
-    ) -> Option<ChuniInputEvent> {
-        info!("Converting keyboard event: {} -> {}", key, pressed);
-        let event = match key {
-            "CHUNIIO_COIN" => Some(ChuniInputEvent::CoinInsert),
-            "CHUNIIO_TEST" => Some(ChuniInputEvent::OperatorButton {
+    async fn parse_chuniio_event(&mut self, key: &str, pressed: bool) -> Option<ChuniInputEvent> {
+        trace!("Parsing event: {} -> {}", key, pressed);
+        let event = if key == "CHUNIIO_COIN" {
+            Some(ChuniInputEvent::CoinInsert)
+        } else if key == "CHUNIIO_TEST" {
+            Some(ChuniInputEvent::OperatorButton {
                 button: CHUNI_IO_OPBTN_TEST,
                 pressed,
-            }),
-            "CHUNIIO_SERVICE" => Some(ChuniInputEvent::OperatorButton {
+            })
+        } else if key == "CHUNIIO_SERVICE" {
+            Some(ChuniInputEvent::OperatorButton {
                 button: CHUNI_IO_OPBTN_SERVICE,
                 pressed,
-            }),
-            key if key.starts_with("CHUNIIO_SLIDER_") => {
-                if let Ok(region) = key.strip_prefix("CHUNIIO_SLIDER_")?.parse::<u8>() {
-                    if region < 32 {
-                        Some(ChuniInputEvent::SliderTouch {
-                            region,
-                            pressure: if pressed { 255 } else { 0 },
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-            key if key.starts_with("CHUNIIO_IR_") => {
-                if let Ok(beam) = key.strip_prefix("CHUNIIO_IR_")?.parse::<u8>() {
-                    if beam < 6 {
-                        Some(ChuniInputEvent::IrBeam {
-                            beam,
-                            broken: pressed,
-                        })
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-            _ => None,
+            })
+        } else if let Some(region_str) = key.strip_prefix("CHUNIIO_SLIDER_") {
+            region_str
+                .parse::<u8>()
+                .ok()
+                .filter(|&region| region < 32)
+                .map(|region| ChuniInputEvent::SliderTouch {
+                    region,
+                    pressure: if pressed { 255 } else { 0 },
+                })
+        } else if let Some(beam_str) = key.strip_prefix("CHUNIIO_IR_") {
+            beam_str
+                .parse::<u8>()
+                .ok()
+                .filter(|&beam| beam < 6)
+                .map(|beam| ChuniInputEvent::IrBeam {
+                    beam,
+                    broken: pressed,
+                })
+        } else {
+            None
         };
 
         if let Some(ref evt) = event {
-            info!("Generated chuniio event: {:?}", evt);
+            trace!("Generated chuniio event: {:?}", evt);
         } else {
             warn!("No chuniio event generated for key: {}", key);
         }

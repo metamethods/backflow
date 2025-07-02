@@ -304,10 +304,7 @@ impl Clone for WebServer {
     fn clone(&self) -> Self {
         Self {
             bind_addr: self.bind_addr,
-            event_stream: InputEventStream {
-                tx: self.event_stream.tx.clone(),
-                rx: self.event_stream.rx.clone(),
-            },
+            event_stream: self.event_stream.clone(),
             feedback_stream: FeedbackEventStream {
                 tx: self.feedback_stream.tx.clone(),
                 rx: self.feedback_stream.rx.clone(),
