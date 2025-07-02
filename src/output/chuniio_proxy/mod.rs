@@ -758,14 +758,20 @@ impl InternalChuniioProxyServer {
                 Ok(Some(ChuniMessage::Pong))
             }
             ChuniMessage::LedUpdate { board, rgb_data } => {
-                // debug!(
-                //     "Client {} LED board update: board={}, {} bytes",
-                //     client_id,
-                //     board,
-                //     rgb_data.len()
-                // );
+                // Only process board 2 (slider) - ignore other boards
+                if board != 2 {
+                    debug!("Ignoring LED update for non-slider board {}", board);
+                    return Ok(Some(ChuniMessage::Pong));
+                }
 
-                // Route to feedback system
+                debug!(
+                    "Client {} LED board update: board={}, {} bytes",
+                    client_id,
+                    board,
+                    rgb_data.len()
+                );
+
+                // Route to feedback system (only board 2 = slider)
                 let timestamp = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_millis() as u64)
@@ -779,24 +785,16 @@ impl InternalChuniioProxyServer {
                 };
 
                 // Convert RGB data to individual LED events (every 3 bytes = B,G,R in chuniio format)
-                // Apply slider clamping only for board 2 (slider), other boards send all LEDs
-                let max_leds = if board == 2 {
-                    feedback_config
-                        .as_ref()
-                        .map(|config| config.slider_clamp_lights as usize)
-                        .unwrap_or(rgb_data.len() / 3)
-                } else {
-                    rgb_data.len() / 3 // Send all LEDs for non-slider boards
-                };
+                // Apply slider clamping for board 2
+                let max_leds = feedback_config
+                    .as_ref()
+                    .map(|config| config.slider_clamp_lights as usize)
+                    .unwrap_or(rgb_data.len() / 3);
 
-                let led_offset = if board == 2 {
-                    feedback_config
-                        .as_ref()
-                        .map(|config| config.slider_id_offset as u8)
-                        .unwrap_or(0)
-                } else {
-                    0 // No offset for non-slider boards
-                };
+                let led_offset = feedback_config
+                    .as_ref()
+                    .map(|config| config.slider_id_offset as u8)
+                    .unwrap_or(0);
 
                 for (led_index, bgr_chunk) in rgb_data.chunks(3).enumerate().take(max_leds) {
                     if bgr_chunk.len() == 3 {
