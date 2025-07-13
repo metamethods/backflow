@@ -83,6 +83,7 @@
 //!
 //! All multi-byte integers are transmitted in little-endian format.
 
+use crate::CHANNEL_BUFFER_SIZE;
 use crate::feedback::FeedbackEventStream;
 use crate::feedback::generators::chuni_jvs::{ChuniLedDataPacket, LedBoardData, Rgb};
 use crate::input::{
@@ -217,15 +218,11 @@ impl OutputBackend for ChuniioProxyServer {
                     match chuni_event {
                         Some(event) => {
                             trace!("Processing chuniio event in proxy: {:?}", event);
-                            // Update internal state - use try_write for non-blocking
-                            if let Ok(mut state) = self.protocol_state.try_write() {
-                                state.process_input_event(event);
-                                trace!("Updated proxy state - opbtn: {}, beams: {}, coins: {}",
-                                      state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter);
-                            } else {
-                                // If we can't get the lock immediately, skip state update to avoid blocking
-                                warn!("Could not acquire state lock, skipping state update for chuniio event");
-                            }
+                            // Update internal state - use blocking write to ensure all events are processed
+                            let mut state = self.protocol_state.write().await;
+                            state.process_input_event(event);
+                            trace!("Updated proxy state - opbtn: {}, beams: {}, coins: {}\nslider: {:?}",
+                                  state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter, state.slider_state.pressure);
                         }
                         None => {
                             tracing::debug!("Chuniio input channel closed");
@@ -279,7 +276,10 @@ impl ChuniioProxyServer {
             packet.device_id,
             packet.events.len()
         );
-        for event in packet.events {
+        // --- Track actual IO state in memory (slider, IR, opbtn) ---
+        // Remove direct state updates here; only update state in main event loop
+        // Handle input events
+        for event in &packet.events {
             match &event {
                 InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
                 | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
@@ -290,45 +290,38 @@ impl ChuniioProxyServer {
                     }
                     let pressed =
                         matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
-                    trace!(
-                        "Processing key {}: {}",
-                        if pressed { "press" } else { "release" },
-                        key
-                    );
                     if let Some(chuni_event) = self.parse_chuniio_event(key, pressed).await {
-                        trace!("Sending chuniio event to proxy: {:?}", chuni_event);
-                        if let Err(e) = input_tx.try_send(chuni_event) {
+                        if let Err(e) = input_tx.send(chuni_event).await {
                             warn!(
-                                "Failed to send chuniio input event ({}): {}",
+                                "Failed to send chuniio input event ({}): {}. Event dropped! Key: {} Pressed: {}",
                                 if pressed { "key press" } else { "key release" },
-                                e
+                                e,
+                                key,
+                                pressed
                             );
                         }
                     }
                 }
-
                 InputEvent::Analog(analog_event) => {
                     // Only process CHUNIIO_SLIDER_ analog keys in chuniio backend
                     if let Some(key) = analog_event.keycode.strip_prefix("CHUNIIO_SLIDER_") {
                         if let Ok(region) = key.parse::<u8>() {
                             if region < 32 {
                                 let pressure = analog_event.value as u8;
-                                trace!(
-                                    "Processing analog slider region {} with pressure {}",
-                                    region,
-                                    pressure
-                                );
                                 let chuni_event = ChuniInputEvent::SliderTouch { region, pressure };
-                                if let Err(e) = input_tx.try_send(chuni_event) {
+                                if let Err(e) = input_tx.send(chuni_event).await {
                                     warn!(
-                                        "Failed to send chuniio analog slider event (region {}): {}",
+                                        "Failed to send chuniio analog slider event (region {}): {}. Event dropped!",
                                         region, e
                                     );
                                 }
                             }
                         }
                     } else {
-                        trace!("Skipping non-CHUNIIO analog event in chuniio backend: {:?}", analog_event);
+                        trace!(
+                            "Skipping non-CHUNIIO analog event in chuniio backend: {:?}",
+                            analog_event
+                        );
                     }
                 }
                 // Handle other input types as needed
@@ -342,7 +335,7 @@ impl ChuniioProxyServer {
 
     /// Convert keyboard events to chuniio events
     async fn parse_chuniio_event(&mut self, key: &str, pressed: bool) -> Option<ChuniInputEvent> {
-        trace!("Parsing event: {} -> {}", key, pressed);
+        // trace!("Parsing event: {} -> {}", key, pressed);
         let event = if key == "CHUNIIO_COIN" {
             Some(ChuniInputEvent::CoinInsert)
         } else if key == "CHUNIIO_TEST" {
@@ -360,9 +353,13 @@ impl ChuniioProxyServer {
                 .parse::<u8>()
                 .ok()
                 .filter(|&region| region < 32)
-                .map(|region| ChuniInputEvent::SliderTouch {
-                    region,
-                    pressure: if pressed { 255 } else { 0 },
+                .map(|region| {
+                    let pressure = if pressed { 255 } else { 0 };
+                    trace!(
+                        "Generated slider event: region={}, pressure={}, pressed={}",
+                        region, pressure, pressed
+                    );
+                    ChuniInputEvent::SliderTouch { region, pressure }
                 })
         } else if let Some(beam_str) = key.strip_prefix("CHUNIIO_IR_") {
             beam_str
@@ -377,8 +374,8 @@ impl ChuniioProxyServer {
             None
         };
 
-        if let Some(ref evt) = event {
-            trace!("Generated chuniio event: {:?}", evt);
+        if let Some(ref _evt) = event {
+            // trace!("Generated chuniio event: {:?}", evt);
         } else {
             warn!("No chuniio event generated for key: {}", key);
         }
@@ -499,7 +496,7 @@ impl InternalChuniioProxyServer {
 
         // Channel for receiving feedback events to send to this client
         let (_client_feedback_tx, mut client_feedback_rx) =
-            mpsc::channel::<ChuniFeedbackEvent>(100);
+            mpsc::channel::<ChuniFeedbackEvent>(CHANNEL_BUFFER_SIZE);
 
         // Spawn task to handle outgoing feedback messages
         let writer_clone = Arc::clone(&writer);
@@ -606,7 +603,6 @@ impl InternalChuniioProxyServer {
                         beams: state.jvs_state.beams,
                     }
                 } else {
-                    // If we can't get the lock, return default state to avoid blocking
                     ChuniMessage::JvsPollResponse {
                         opbtn: 0,
                         beams: 0x3F, // All beams clear by default
@@ -621,7 +617,6 @@ impl InternalChuniioProxyServer {
                         count: state.coin_counter,
                     }
                 } else {
-                    // If we can't get the lock, return 0 to avoid blocking
                     ChuniMessage::CoinCounterReadResponse { count: 0 }
                 };
                 Ok(Some(response))
@@ -633,8 +628,26 @@ impl InternalChuniioProxyServer {
                         pressure: state.slider_state.pressure,
                     }
                 } else {
-                    // If we can't get the lock, return empty pressure array
                     ChuniMessage::SliderStateReadResponse { pressure: [0; 32] }
+                };
+                Ok(Some(response))
+            }
+            // --- Expose full IO state to native client ---
+            ChuniMessage::JvsFullStateRead => {
+                let response = if let Ok(state) = protocol_state.try_read() {
+                    ChuniMessage::JvsFullStateReadResponse {
+                        opbtn: state.jvs_state.opbtn,
+                        beams: state.jvs_state.beams,
+                        pressure: state.slider_state.pressure,
+                        coin_counter: state.coin_counter,
+                    }
+                } else {
+                    ChuniMessage::JvsFullStateReadResponse {
+                        opbtn: 0,
+                        beams: 0x3F,
+                        pressure: [0; 32],
+                        coin_counter: 0,
+                    }
                 };
                 Ok(Some(response))
             }
@@ -651,10 +664,13 @@ impl InternalChuniioProxyServer {
                 // Send slider touch events for changed regions
                 for (region, &pressure_value) in pressure.iter().enumerate() {
                     if pressure_value > 0 {
-                        if let Err(e) = input_tx.try_send(ChuniInputEvent::SliderTouch {
-                            region: region as u8,
-                            pressure: pressure_value,
-                        }) {
+                        if let Err(e) = input_tx
+                            .send(ChuniInputEvent::SliderTouch {
+                                region: region as u8,
+                                pressure: pressure_value,
+                            })
+                            .await
+                        {
                             warn!("Failed to send slider touch event: {}", e);
                         }
                     }
@@ -772,7 +788,10 @@ impl InternalChuniioProxyServer {
         &self,
         event: ChuniFeedbackEvent,
     ) -> Result<(), mpsc::error::TrySendError<ChuniFeedbackEvent>> {
-        self.feedback_tx.try_send(event)
+        self.feedback_tx
+            .send(event)
+            .await
+            .map_err(|e| mpsc::error::TrySendError::Closed(e.0))
     }
 
     /// Send input event (for external use)
@@ -780,16 +799,15 @@ impl InternalChuniioProxyServer {
         &self,
         event: ChuniInputEvent,
     ) -> Result<(), mpsc::error::TrySendError<ChuniInputEvent>> {
-        // Update internal state - use try_write for non-blocking
-        if let Ok(mut state) = self.protocol_state.try_write() {
-            state.process_input_event(event.clone());
-        } else {
-            // If we can't get the lock immediately, skip state update to avoid blocking
-            warn!("Could not acquire state lock for input event processing");
-        }
+        // Update internal state - always block for lock
+        let mut state = self.protocol_state.write().await;
+        state.process_input_event(event.clone());
 
         // Forward to input handler
-        self.input_tx.try_send(event)
+        self.input_tx
+            .send(event)
+            .await
+            .map_err(|e| mpsc::error::TrySendError::Closed(e.0))
     }
 }
 

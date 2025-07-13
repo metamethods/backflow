@@ -8,6 +8,7 @@ mod protos;
 use eyre::Result;
 
 pub const PACKET_PROCESSING_TARGET: &str = "backflow::websocket::rgb";
+pub const CHANNEL_BUFFER_SIZE: usize = 2000; // Size of the channel buffer for input events
 
 pub fn build_logger() -> Result<()> {
     // Create an env filter that defaults to "info" level if RUST_LOG is not set
@@ -22,7 +23,11 @@ pub fn build_logger() -> Result<()> {
             .add_directive("tungstenite=warn".parse().unwrap())
             .add_directive("tokio_tungstenite=warn".parse().unwrap())
             .add_directive("async_io=warn".parse().unwrap())
-            .add_directive(format!("{}=warn", PACKET_PROCESSING_TARGET).parse().unwrap())
+            .add_directive(
+                format!("{}=warn", PACKET_PROCESSING_TARGET)
+                    .parse()
+                    .unwrap(),
+            )
         // Keep our application logs at trace level
         // .add_directive("Backflow=trace".parse().unwrap())
     });

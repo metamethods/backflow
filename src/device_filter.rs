@@ -46,10 +46,10 @@ impl DeviceFilter {
             }
             packet.events = filtered_events;
         } else {
-            debug!(
-                "No device config found for device '{}', using default transformation",
-                packet.device_id
-            );
+            // debug!(
+            //     "No device config found for device '{}', using default transformation",
+            //     packet.device_id
+            // );
         }
 
         Ok(packet)

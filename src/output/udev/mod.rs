@@ -238,7 +238,7 @@ impl UdevOutput {
         };
 
         if !crate::device_filter::DeviceFilter::is_standard_evdev_key(key) {
-            tracing::trace!("Skipping non-standard evdev key in udev backend: {}", key);
+            // tracing::trace!("Skipping non-standard evdev key in udev backend: {}", key);
             return Ok(());
         }
 

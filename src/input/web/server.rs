@@ -681,8 +681,19 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
                                 packet.events.len()
                             );
 
+                            // debug!(
+                            //     "Forwarding input event packet from {} to main input stream: device_id={}, events={}",
+                            //     addr,
+                            //     packet.device_id,
+                            //     packet.events.len()
+                            // );
                             if let Err(e) = input_stream.send(packet).await {
                                 error!("Failed to send input event to stream: {}", e);
+                            } else {
+                                debug!(
+                                    "Successfully sent input event packet from {} to main input stream",
+                                    addr
+                                );
                             }
                         }
                         // If not an input packet, try to parse as FeedbackEventPacket for broadcasting

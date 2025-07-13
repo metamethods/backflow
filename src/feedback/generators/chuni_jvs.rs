@@ -34,6 +34,7 @@
 
 use crate::config::ChuniIoRgbConfig;
 use crate::feedback::{FeedbackEvent, FeedbackEventPacket, LedEvent};
+use crate::CHANNEL_BUFFER_SIZE;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
@@ -295,7 +296,7 @@ pub fn create_chuni_led_channel() -> (
     mpsc::Sender<ChuniLedDataPacket>,
     mpsc::Receiver<ChuniLedDataPacket>,
 ) {
-    mpsc::channel(500) // Larger buffer for high-frequency LED updates
+    mpsc::channel(CHANNEL_BUFFER_SIZE) // Larger buffer for high-frequency LED updates
 }
 
 /// CHUNITHM JVS reader service that listens on a Unix domain socket,

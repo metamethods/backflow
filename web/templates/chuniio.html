@@ -47,65 +47,125 @@
             </div>
         </div>
         <script>
-            let serviceHoldTimer = null;
-            let isServicePopupVisible = false;
-            
-            const serviceButton = document.getElementById('serviceButton');
-            const servicePopup = document.getElementById('servicePopup');
-            const serviceButtons = document.querySelectorAll('.service-btn');
+            document.addEventListener('DOMContentLoaded', () => {
+                let serviceHoldTimer = null;
+                let isServicePopupVisible = false;
+                let touchStartTime = 0;
+                let lastServiceButtonEvent = 0;
+                
+                const serviceButton = document.getElementById('serviceButton');
+                const servicePopup = document.getElementById('servicePopup');
+                const serviceButtons = document.querySelectorAll('.service-btn');
 
-            serviceButton.addEventListener('mousedown', startServiceHold);
-            serviceButton.addEventListener('mouseup', stopServiceHold);
-            serviceButton.addEventListener('mouseleave', stopServiceHold);
-            serviceButton.addEventListener('touchstart', startServiceHold);
-            serviceButton.addEventListener('touchend', stopServiceHold);
-            serviceButton.addEventListener('touchcancel', stopServiceHold);
-            
-            function startServiceHold(event) {
-                event.preventDefault();
-                serviceHoldTimer = setTimeout(() => {
-                    showServicePopup();
-                }, 1000);
-            }
-            
-            function stopServiceHold(event) {
-                event.preventDefault();
-                if (serviceHoldTimer) {
-                    clearTimeout(serviceHoldTimer);
-                    serviceHoldTimer = null;
+                // Handle both mouse and touch events for the service button
+                serviceButton.addEventListener('mousedown', startServiceHold);
+                serviceButton.addEventListener('mouseup', stopServiceHold);
+                serviceButton.addEventListener('mouseleave', stopServiceHold);
+                serviceButton.addEventListener('touchstart', startServiceHoldTouch, { passive: false });
+                serviceButton.addEventListener('touchend', stopServiceHoldTouch, { passive: false });
+                serviceButton.addEventListener('touchcancel', stopServiceHoldTouch, { passive: false });
+                
+                function startServiceHold(event) {
+                    event.preventDefault();
+                    serviceHoldTimer = setTimeout(() => {
+                        showServicePopup();
+                    }, 1000);
                 }
-            }
-            
-            function showServicePopup() {
-                isServicePopupVisible = true;
-                servicePopup.classList.add('show');
-            }
-            
-            function hideServicePopup() {
-                isServicePopupVisible = false;
-                servicePopup.classList.remove('show');
-            }
-            
-            document.addEventListener('click', (event) => {
-                if (isServicePopupVisible && !servicePopup.contains(event.target) && !serviceButton.contains(event.target)) {
-                    hideServicePopup();
+                
+                function startServiceHoldTouch(event) {
+                    event.preventDefault();
+                    touchStartTime = Date.now();
+                    serviceHoldTimer = setTimeout(() => {
+                        showServicePopup();
+                    }, 1000);
                 }
-            });
-            
-            serviceButtons.forEach(button => {
-                button.addEventListener('click', (event) => {
-                    const key = event.target.dataset.key;
-                    if (key && window.gridController) {
-                        window.gridController.webSocketHandler.sendKeyboardEvent(key, true, "service-menu");
-                        setTimeout(() => {
-                            window.gridController.webSocketHandler.sendKeyboardEvent(key, false, "service-menu");
-                        }, 100);
-                        
-                        setTimeout(() => {
-                            hideServicePopup();
-                        }, 200);
+                
+                function stopServiceHold(event) {
+                    event.preventDefault();
+                    if (serviceHoldTimer) {
+                        clearTimeout(serviceHoldTimer);
+                        serviceHoldTimer = null;
+                    }
+                }
+                
+                function stopServiceHoldTouch(event) {
+                    event.preventDefault();
+                    if (serviceHoldTimer) {
+                        clearTimeout(serviceHoldTimer);
+                        serviceHoldTimer = null;
+                    }
+                    touchStartTime = 0;
+                }
+                
+                function showServicePopup() {
+                    isServicePopupVisible = true;
+                    servicePopup.classList.add('show');
+                    console.log('🔧 Service popup shown');
+                }
+                
+                function hideServicePopup() {
+                    isServicePopupVisible = false;
+                    servicePopup.classList.remove('show');
+                    console.log('🔧 Service popup hidden');
+                }
+                
+                // Utility: detect iOS PWA
+                function isIOSPWA() {
+                    return (
+                        window.navigator.standalone === true ||
+                        (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches)
+                    ) && /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+                }
+                const iospwa = isIOSPWA();
+                
+                // Handle both click and touch events for hiding popup
+                function handleOutsideInteraction(event) {
+                    if (isServicePopupVisible && 
+                        !servicePopup.contains(event.target) && 
+                        !serviceButton.contains(event.target)) {
+                        hideServicePopup();
+                    }
+                }
+                
+                if (iospwa) {
+                    document.addEventListener('touchstart', handleOutsideInteraction, { passive: true });
+                } else {
+                    document.addEventListener('click', handleOutsideInteraction);
+                    document.addEventListener('touchstart', handleOutsideInteraction, { passive: true });
+                }
+                
+                serviceButtons.forEach(button => {
+                    // Handle both click and touch events for service buttons
+                    function handleServiceButtonPress(event) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        // Prevent double firing on iOS (touchend + click)
+                        const now = Date.now();
+                        if (now - lastServiceButtonEvent < 350) return;
+                        lastServiceButtonEvent = now;
+
+                        const key = event.target.dataset.key;
+                        console.log('🔧 Service button pressed:', key);
+
+                        if (key && window.gridController) {
+                            window.gridController.webSocketHandler.sendKeyboardEvent(key, true, "service-menu");
+                            setTimeout(() => {
+                                window.gridController.webSocketHandler.sendKeyboardEvent(key, false, "service-menu");
+                            }, 100);
+                        } else if (key) {
+                            console.warn('Service button clicked but gridController not available:', key);
+                        }
+                        hideServicePopup(); // Hide immediately
+                    }
+                    if (iospwa) {
+                        button.addEventListener('touchend', handleServiceButtonPress, { passive: false });
+                    } else {
+                        button.addEventListener('click', handleServiceButtonPress);
+                        button.addEventListener('touchend', handleServiceButtonPress, { passive: false });
                     }
                 });
+                
+                console.log('🔧 Service menu initialized for iOS Safari compatibility');
             });
         </script>
     </body>

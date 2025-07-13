@@ -65,6 +65,14 @@ pub enum MessageType {
     SliderStateRead = 0x0A,
     /// Slider state read response
     SliderStateReadResponse = 0x0B,
+    /// JVS full IO state read request (Backflow extension)
+    ///
+    /// This message is a Backflow-specific extension to allow the native DLL to request the entire IO state (opbtn, beams, slider, coin counter) in a single roundtrip.
+    JvsFullStateRead = 0x0C,
+    /// JVS full IO state read response (Backflow extension)
+    ///
+    /// This message is a Backflow-specific extension, sent in response to JvsFullStateRead, containing the full IO state (opbtn, beams, slider, coin counter).
+    JvsFullStateReadResponse = 0x0D,
 }
 
 impl TryFrom<u8> for MessageType {
@@ -83,6 +91,8 @@ impl TryFrom<u8> for MessageType {
             0x09 => Ok(MessageType::Pong),
             0x0A => Ok(MessageType::SliderStateRead),
             0x0B => Ok(MessageType::SliderStateReadResponse),
+            0x0C => Ok(MessageType::JvsFullStateRead),
+            0x0D => Ok(MessageType::JvsFullStateReadResponse),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Unknown message type: {:#04x}", value),
@@ -259,6 +269,15 @@ pub enum ChuniMessage {
     Ping,
     /// Pong response
     Pong,
+    /// JVS full IO state read request (from game)
+    JvsFullStateRead,
+    /// JVS full IO state read response (to game)
+    JvsFullStateReadResponse {
+        opbtn: u8,
+        beams: u8,
+        pressure: [u8; CHUNI_SLIDER_REGIONS],
+        coin_counter: u16,
+    },
 }
 
 impl ChuniMessage {
@@ -310,6 +329,21 @@ impl ChuniMessage {
             ChuniMessage::Pong => {
                 bytes.push(MessageType::Pong as u8);
             }
+            ChuniMessage::JvsFullStateRead => {
+                bytes.push(MessageType::JvsFullStateRead as u8);
+            }
+            ChuniMessage::JvsFullStateReadResponse {
+                opbtn,
+                beams,
+                pressure,
+                coin_counter,
+            } => {
+                bytes.push(MessageType::JvsFullStateReadResponse as u8);
+                bytes.push(*opbtn);
+                bytes.push(*beams);
+                bytes.extend_from_slice(pressure);
+                bytes.extend_from_slice(&coin_counter.to_le_bytes());
+            }
         }
 
         bytes
@@ -358,6 +392,20 @@ impl ChuniMessage {
             }
             MessageType::Ping => Ok(ChuniMessage::Ping),
             MessageType::Pong => Ok(ChuniMessage::Pong),
+            MessageType::JvsFullStateRead => Ok(ChuniMessage::JvsFullStateRead),
+            MessageType::JvsFullStateReadResponse => {
+                let opbtn = reader.read_u8().await?;
+                let beams = reader.read_u8().await?;
+                let mut pressure = [0u8; CHUNI_SLIDER_REGIONS];
+                reader.read_exact(&mut pressure).await?;
+                let coin_counter = reader.read_u16_le().await?;
+                Ok(ChuniMessage::JvsFullStateReadResponse {
+                    opbtn,
+                    beams,
+                    pressure,
+                    coin_counter,
+                })
+            }
         }
     }
 
