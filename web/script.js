@@ -99,7 +99,18 @@ class WebSocketHandler {
       },
     ];
 
-    return this.sendInputEvent(deviceId, events);
+    // Add retry logic for failed sends
+    const sendWithRetry = (attempt = 1) => {
+      const success = this.sendInputEvent(deviceId, events);
+      if (!success && attempt < 3) {
+        console.warn(`🔄 Keyboard event send failed (attempt ${attempt}), retrying...`);
+        setTimeout(() => sendWithRetry(attempt + 1), 10 * attempt); // exponential backoff
+      } else if (!success) {
+        console.error(`❌ Keyboard event send failed after 3 attempts: ${key} ${eventType}`);
+      }
+    };
+
+    sendWithRetry();
   }
 
   sendPointerEvent(eventType, data, deviceId = "chunitroller-webapp") {
@@ -262,8 +273,12 @@ class GridController {
     this.cellVisualTouches = new Map(); // cellIndex -> Set of touch IDs (for visual feedback)
     this.pressedKeys = new Map(); // key -> {startTime, cellIndex} - tracks which keys are currently pressed
     this.touchCounter = null; // Will be set in init
-    this.stuckKeyTimeout = 5000; // 5 seconds timeout for stuck keys
+    this.stuckKeyTimeout = 3000; // 3 seconds timeout for stuck keys (reduced from 5s)
     this.cleanupInterval = null; // For periodic cleanup
+    this.multitouchDeadzone = 100; // ms - debounce period for rapid multitouch events
+    this.lastEventTimestamp = new Map(); // key -> timestamp to prevent rapid duplicate events
+    this.pendingKeyEvents = new Map(); // key -> {type: 'press'|'release', timestamp} for debouncing
+    this.keyEventDebounceMs = 16; // ~60fps debouncing for key events
     this.init();
   }
 
@@ -282,11 +297,129 @@ class GridController {
     console.log(`Grid controller initialized with ${this.cells.length} cells`);
   }
 
+  // Send a debounced keyboard event to prevent rapid duplicates
+  sendDebouncedKeyboardEvent(key, pressed, deviceName) {
+    const now = Date.now();
+    const eventType = pressed ? 'press' : 'release';
+    const lastEventTime = this.lastEventTimestamp.get(key) || 0;
+    
+    // For rapid multitouch, add slight debouncing
+    if (now - lastEventTime < this.keyEventDebounceMs) {
+      // Queue the event instead of sending immediately
+      this.pendingKeyEvents.set(key, {
+        type: eventType,
+        timestamp: now,
+        deviceName: deviceName,
+        pressed: pressed
+      });
+      
+      // Clear any existing timeout for this key
+      const timeoutKey = `timeout_${key}`;
+      if (this[timeoutKey]) {
+        clearTimeout(this[timeoutKey]);
+      }
+      
+      // Set a new timeout to send the queued event
+      this[timeoutKey] = setTimeout(() => {
+        const pendingEvent = this.pendingKeyEvents.get(key);
+        if (pendingEvent) {
+          this.webSocketHandler.sendKeyboardEvent(pendingEvent.pressed ? key : key, pendingEvent.pressed, pendingEvent.deviceName);
+          this.lastEventTimestamp.set(key, pendingEvent.timestamp);
+          this.pendingKeyEvents.delete(key);
+        }
+        delete this[timeoutKey];
+      }, this.keyEventDebounceMs);
+      
+      return;
+    }
+    
+    // Send immediately if enough time has passed
+    this.webSocketHandler.sendKeyboardEvent(key, pressed, deviceName);
+    this.lastEventTimestamp.set(key, now);
+  }
+
   // Start periodic cleanup of stuck keys
   startStuckKeyCleanup() {
     this.cleanupInterval = setInterval(() => {
       this.cleanupStuckKeys();
-    }, 1000); // Check every second
+      this.cleanupOrphanedTouches(); // Add orphaned touch cleanup
+      this.validateAndCleanupState(); // Add state validation
+    }, 500); // Check every 500ms instead of 1000ms for better responsiveness
+  }
+
+  // Clean up touches that may have been orphaned during rapid multitouch
+  cleanupOrphanedTouches() {
+    const now = Date.now();
+    const orphanTimeout = 2000; // 2 seconds
+    
+    // Check for touches that have been active too long without movement
+    const orphanedTouches = [];
+    this.activeTouches.forEach((touchData, touchId) => {
+      if (now - touchData.startTime > orphanTimeout) {
+        orphanedTouches.push(touchId);
+      }
+    });
+    
+    // Clean up orphaned touches
+    orphanedTouches.forEach(touchId => {
+      console.warn(`🧹 Cleaning up orphaned touch: ${touchId}`);
+      this.handleTouchEnd({ identifier: touchId }, "orphaned_cleanup");
+    });
+  }
+
+  // Validate state consistency and clean up any inconsistencies
+  validateAndCleanupState() {
+    const now = Date.now();
+    let fixedIssues = 0;
+    
+    // Check for pressed keys that don't have corresponding touch counts
+    this.pressedKeys.forEach((pressInfo, key) => {
+      const cellIndex = pressInfo.cellIndex;
+      const touchCount = this.cellTouchCounts.get(cellIndex) || 0;
+      
+      // If a key is pressed but no touches are tracked for that cell, it's stuck
+      if (touchCount === 0) {
+        console.warn(`🔧 Found stuck key ${key} with no active touches, force releasing`);
+        this.forceReleaseKey(key, cellIndex, "state_validation_cleanup");
+        fixedIssues++;
+      }
+    });
+    
+    // Check for touch counts that don't have corresponding active touches
+    this.cellTouchCounts.forEach((count, cellIndex) => {
+      if (count > 0) {
+        // Count how many active touches actually reference this cell
+        let actualTouches = 0;
+        this.activeTouches.forEach((touchData) => {
+          if (touchData.index === cellIndex) {
+            actualTouches++;
+          }
+        });
+        
+        if (actualTouches !== count) {
+          console.warn(`🔧 Cell ${cellIndex} has touch count ${count} but only ${actualTouches} active touches, correcting`);
+          this.cellTouchCounts.set(cellIndex, actualTouches);
+          
+          // If no actual touches but we have a key pressed for this cell, release it
+          if (actualTouches === 0) {
+            const cell = this.cells[cellIndex];
+            if (cell) {
+              const key = this.mapCellToKey(cell);
+              if (this.pressedKeys.has(key)) {
+                this.forceReleaseKey(key, cellIndex, "touch_count_correction");
+                fixedIssues++;
+              }
+            }
+          }
+        }
+      }
+    });
+    
+    if (fixedIssues > 0) {
+      console.log(`🔧 State validation fixed ${fixedIssues} issues`);
+    }
+    
+    return fixedIssues;
   }
 
   // Clean up keys that have been pressed for too long
@@ -312,7 +445,7 @@ class GridController {
   forceReleaseKey(key, cellIndex, reason = "force_release") {
     // Send keyboard release event
     const deviceName = this.getDeviceNameForCell(this.cells[cellIndex]);
-    this.webSocketHandler.sendKeyboardEvent(key, false, deviceName);
+    this.sendDebouncedKeyboardEvent(key, false, deviceName);
     
     // Remove from pressed keys tracking
     this.pressedKeys.delete(key);
@@ -418,6 +551,12 @@ class GridController {
         );
         e.preventDefault();
         Array.from(e.changedTouches).forEach((touch) => {
+          // Skip if we're already tracking this touch (shouldn't happen but safety check)
+          if (this.activeTouches.has(touch.identifier)) {
+            console.warn(`👆 Duplicate touch start for ID ${touch.identifier}, ignoring`);
+            return;
+          }
+          
           const elementUnderTouch = document.elementFromPoint(
             touch.clientX,
             touch.clientY,
@@ -463,20 +602,25 @@ class GridController {
                 const key = this.mapCellToKey(elementUnderTouch);
                 const deviceName = this.getDeviceNameForCell(elementUnderTouch);
                 
-                // Track this key as pressed
-                this.pressedKeys.set(key, {
-                  startTime: Date.now(),
-                  cellIndex: cellIndex
-                });
-                
-                this.webSocketHandler.sendKeyboardEvent(key, true, deviceName);
+                // Double-check we're not already tracking this key as pressed
+                if (!this.pressedKeys.has(key)) {
+                  // Track this key as pressed
+                  this.pressedKeys.set(key, {
+                    startTime: Date.now(),
+                    cellIndex: cellIndex
+                  });
+                  
+                  this.sendDebouncedKeyboardEvent(key, true, deviceName);
 
-                elementUnderTouch.dispatchEvent(
-                  new CustomEvent("cellpress", {
-                    detail: { index: cellIndex, cell: elementUnderTouch, key },
-                    bubbles: true,
-                  }),
-                );
+                  elementUnderTouch.dispatchEvent(
+                    new CustomEvent("cellpress", {
+                      detail: { index: cellIndex, cell: elementUnderTouch, key },
+                      bubbles: true,
+                    }),
+                  );
+                } else {
+                  console.warn(`👆 Key ${key} already pressed, not sending duplicate press event`);
+                }
               }
 
               this.updateTouchCounter();
@@ -557,22 +701,27 @@ class GridController {
         const key = this.mapCellToKey(touchData.cell);
         const deviceName = this.getDeviceNameForCell(touchData.cell);
         
-        // Remove from pressed keys tracking
-        this.pressedKeys.delete(key);
-        
-        this.webSocketHandler.sendKeyboardEvent(key, false, deviceName);
+        // Validate that this key is actually pressed before releasing
+        if (this.pressedKeys.has(key)) {
+          // Remove from pressed keys tracking
+          this.pressedKeys.delete(key);
+          
+          this.sendDebouncedKeyboardEvent(key, false, deviceName);
 
-        touchData.cell.dispatchEvent(
-          new CustomEvent("cellrelease", {
-            detail: {
-              index: touchData.index,
-              cell: touchData.cell,
-              key: key,
-              reason: reason,
-            },
-            bubbles: true,
-          }),
-        );
+          touchData.cell.dispatchEvent(
+            new CustomEvent("cellrelease", {
+              detail: {
+                index: touchData.index,
+                cell: touchData.cell,
+                key: key,
+                reason: reason,
+              },
+              bubbles: true,
+            }),
+          );
+        } else {
+          console.warn(`🚨 Attempted to release key ${key} that wasn't tracked as pressed`);
+        }
       } else {
         console.log(
           "🔴 Still",
@@ -588,6 +737,10 @@ class GridController {
         "🔴 Touch end but no touch data found for:",
         touch.identifier,
       );
+      
+      // Emergency cleanup: if we somehow lost track of a touch, 
+      // try to find any orphaned key presses and clean them up
+      this.validateAndCleanupState();
     }
   }
 
@@ -760,26 +913,31 @@ class GridController {
             const oldKey = this.mapCellToKey(touchData.cell);
             const oldDeviceName = this.getDeviceNameForCell(touchData.cell);
             
-            // Remove from pressed keys tracking
-            this.pressedKeys.delete(oldKey);
-            
-            this.webSocketHandler.sendKeyboardEvent(
-              oldKey,
-              false,
-              oldDeviceName,
-            );
+            // Only release if we're actually tracking this key as pressed
+            if (this.pressedKeys.has(oldKey)) {
+              // Remove from pressed keys tracking
+              this.pressedKeys.delete(oldKey);
+              
+              this.sendDebouncedKeyboardEvent(
+                oldKey,
+                false,
+                oldDeviceName,
+              );
 
-            touchData.cell.dispatchEvent(
-              new CustomEvent("cellrelease", {
-                detail: {
-                  index: touchData.index,
-                  cell: touchData.cell,
-                  key: oldKey,
-                  reason: "slid_away",
-                },
-                bubbles: true,
-              }),
-            );
+              touchData.cell.dispatchEvent(
+                new CustomEvent("cellrelease", {
+                  detail: {
+                    index: touchData.index,
+                    cell: touchData.cell,
+                    key: oldKey,
+                    reason: "slid_away",
+                  },
+                  bubbles: true,
+                }),
+              );
+            } else {
+              console.warn(`🔄 Attempted to release key ${oldKey} during slide, but it wasn't tracked as pressed`);
+            }
           }
 
           // Add this touch to new cell's visual tracking
@@ -808,20 +966,25 @@ class GridController {
             const key = this.mapCellToKey(elementUnderTouch);
             const deviceName = this.getDeviceNameForCell(elementUnderTouch);
             
-            // Track this key as pressed
-            this.pressedKeys.set(key, {
-              startTime: Date.now(),
-              cellIndex: newCellIndex
-            });
-            
-            this.webSocketHandler.sendKeyboardEvent(key, true, deviceName);
+            // Double-check we're not already tracking this key as pressed
+            if (!this.pressedKeys.has(key)) {
+              // Track this key as pressed
+              this.pressedKeys.set(key, {
+                startTime: Date.now(),
+                cellIndex: newCellIndex
+              });
+              
+              this.sendDebouncedKeyboardEvent(key, true, deviceName);
 
-            elementUnderTouch.dispatchEvent(
-              new CustomEvent("cellpress", {
-                detail: { index: newCellIndex, cell: elementUnderTouch, key },
-                bubbles: true,
-              }),
-            );
+              elementUnderTouch.dispatchEvent(
+                new CustomEvent("cellpress", {
+                  detail: { index: newCellIndex, cell: elementUnderTouch, key },
+                  bubbles: true,
+                }),
+              );
+            } else {
+              console.warn(`🔄 Key ${key} already pressed during slide, not sending duplicate press event`);
+            }
           }
         }
       } else {
@@ -891,6 +1054,22 @@ document.addEventListener("DOMContentLoaded", () => {
     return window.gridController.releaseAllStuckKeys();
   };
 
+  // New method to validate state
+  window.validateState = () => {
+    return window.gridController.validateAndCleanupState();
+  };
+
+  // Method to get detailed state for debugging
+  window.getDetailedState = () => {
+    const grid = window.gridController;
+    return {
+      activeTouches: Array.from(grid.activeTouches.entries()),
+      cellTouchCounts: Array.from(grid.cellTouchCounts.entries()),
+      pressedKeys: Array.from(grid.pressedKeys.entries()),
+      pendingKeyEvents: Array.from(grid.pendingKeyEvents.entries()),
+    };
+  };
+
   // Test function to manually activate a cell
   window.testCell = (key) => {
     const cell = document.querySelector(`[data-key="${key}"]`);
@@ -907,7 +1086,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   console.log("🎮 Backflow loaded with improved multitouch support and stuck key detection");
-  console.log("🔧 Debug commands: debugTouch(), resetTouch(), releaseStuckKeys(), testCell('q')");
+  console.log("🔧 Debug commands: debugTouch(), resetTouch(), releaseStuckKeys(), validateState(), getDetailedState(), testCell('q')");
 });
 
 document.addEventListener("cellpress", (e) => {

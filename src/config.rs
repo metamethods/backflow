@@ -58,6 +58,8 @@ pub struct InputConfig {
     pub web: Option<WebBackend>,
     #[serde(default)]
     pub unix: Option<UnixDomainSocketConfig>,
+    #[serde(default)]
+    pub brokenithm: Option<BrokenithmConfig>,
     // #[serde(default)]
     // pub chuniio: Option<ChuniIoSerialConfig>,
 }
@@ -67,6 +69,7 @@ impl Default for InputConfig {
         Self {
             web: default_web_enabled(),
             unix: None,
+            brokenithm: None,
         }
     }
 }
@@ -230,6 +233,50 @@ fn default_chuniio_proxy_socket_path() -> PathBuf {
     } else {
         PathBuf::from("/tmp/backflow_chuniio")
     }
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct BrokenithmUdpConfig {
+    #[serde(default = "default_brokenithm_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_brokenithm_port")]
+    pub port: u16,
+    #[serde(default = "default_brokenithm_host")]
+    pub host: String,
+}
+
+fn default_brokenithm_enabled() -> bool {
+    true
+}
+fn default_brokenithm_port() -> u16 {
+    24864
+}
+fn default_brokenithm_host() -> String {
+    "0.0.0.0".to_string()
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct BrokenithmIdeviceConfig {
+    #[serde(default = "default_brokenithm_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_brokenithm_port")]
+    pub device_port: u16,
+    #[serde(default = "default_brokenithm_port")]
+    pub local_port: u16,
+    #[serde(default)]
+    pub udid: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+pub struct BrokenithmConfig {
+    #[serde(default = "default_brokenithm_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_brokenithm_port")]
+    pub port: u16,
+    #[serde(default = "default_brokenithm_host")]
+    pub host: String,
+    #[serde(default)]
+    pub idevice: Option<BrokenithmIdeviceConfig>,
 }
 
 #[cfg(test)]
