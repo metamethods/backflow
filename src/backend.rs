@@ -131,7 +131,7 @@ impl Backend {
             self.input_handles.push(handle);
         }
 
-        // Start Brokenithm TCP client backend if configured and enabled
+        // Start Brokenithm backend if configured and enabled
         if let Some(brokenithm_config) = &self.config.input.brokenithm {
             if brokenithm_config.enabled {
                 tracing::info!(
@@ -147,48 +147,53 @@ impl Backend {
                         })?;
                 let input_stream = self.streams.input.clone();
                 let handle = tokio::spawn(async move {
-                    use crate::input::brokenithm::BrokenithmTcpClient;
-                    let mut backend = BrokenithmTcpClient::new(connect_addr, input_stream);
+                    use crate::input::brokenithm::{BrokenithmTcpBackend, BrokenithmTcpConfig};
+                    let mut backend = BrokenithmTcpBackend::new(
+                        BrokenithmTcpConfig::Client { connect_addr },
+                        input_stream,
+                    );
                     if let Err(e) = backend.run().await {
                         tracing::error!("Brokenithm TCP client backend error: {}", e);
                     }
                 });
                 self.input_handles.push(handle);
+
+                // Also start iDevice client backend if configured
+                if let Some(idevice_config) = &brokenithm_config.idevice {
+                    if idevice_config.enabled {
+                        tracing::info!(
+                            "Starting Brokenithm iDevice client backend: device_port={} local_port={} udid={:?}",
+                            idevice_config.device_port,
+                            idevice_config.local_port,
+                            idevice_config.udid
+                        );
+                        let input_stream = self.streams.input.clone();
+                        let local_port = idevice_config.local_port;
+                        let device_port = idevice_config.device_port;
+                        let udid = idevice_config.udid.clone();
+                        let handle = tokio::spawn(async move {
+                            use crate::input::brokenithm::{
+                                BrokenithmTcpBackend, BrokenithmTcpConfig,
+                            };
+                            let mut backend = BrokenithmTcpBackend::new(
+                                BrokenithmTcpConfig::DeviceProxy {
+                                    local_port,
+                                    device_port,
+                                    udid,
+                                },
+                                input_stream,
+                            );
+                            if let Err(e) = backend.run().await {
+                                tracing::error!("Brokenithm iDevice client backend error: {}", e);
+                            }
+                        });
+                        self.input_handles.push(handle);
+                    } else {
+                        tracing::info!("Brokenithm iDevice client backend is disabled");
+                    }
+                }
             } else {
                 tracing::info!("Brokenithm TCP client backend is disabled");
-            }
-        }
-
-        // Start Brokenithm iDevice client backend if configured and enabled
-        if let Some(brokenithm_config) = &self.config.input.brokenithm {
-            if let Some(idevice_config) = &brokenithm_config.idevice {
-                if idevice_config.enabled {
-                    tracing::info!(
-                        "Starting Brokenithm iDevice client backend: device_port={} local_port={} udid={:?}",
-                        idevice_config.device_port,
-                        idevice_config.local_port,
-                        idevice_config.udid
-                    );
-                    let input_stream = self.streams.input.clone();
-                    let local_port = idevice_config.local_port;
-                    let device_port = idevice_config.device_port;
-                    let udid = idevice_config.udid.clone();
-                    let handle = tokio::spawn(async move {
-                        use crate::input::brokenithm::BrokenithmIdeviceClient;
-                        let mut backend = BrokenithmIdeviceClient::new(
-                            local_port,
-                            device_port,
-                            udid,
-                            input_stream,
-                        );
-                        if let Err(e) = backend.run().await {
-                            tracing::error!("Brokenithm iDevice client backend error: {}", e);
-                        }
-                    });
-                    self.input_handles.push(handle);
-                } else {
-                    tracing::info!("Brokenithm iDevice client backend is disabled");
-                }
             }
         }
 

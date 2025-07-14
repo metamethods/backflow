@@ -268,13 +268,14 @@ impl OutputBackend for ChuniioProxyServer {
                         // Only apply state if it has changed to avoid redundant updates
                         if brokenithm_state_changed(&brokenithm_state, &self.last_brokenithm_state) {
                             let mut chuniio_state = self.protocol_state.write().await;
-                            // tracing::debug!("Brokenithm state changed, applying to chuniio state: air={:?}, slider_sum={}, test={}, service={}, coin_pulse={}",
-                            //     brokenithm_state.air,
-                            //     brokenithm_state.slider.iter().map(|&x| x as u32).sum::<u32>(),
-                            //     brokenithm_state.test_button,
-                            //     brokenithm_state.service_button,
-                            //     brokenithm_state.coin_pulse
-                            // );
+                            tracing::trace!(
+                                "Brokenithm state changed, applying to chuniio state: air={:?}, slider={:?}, test={}, service={}, coin_pulse={}",
+                                brokenithm_state.air,
+                                brokenithm_state.slider,
+                                brokenithm_state.test_button,
+                                brokenithm_state.service_button,
+                                brokenithm_state.coin_pulse
+                            );
                             apply_brokenithm_state_to_chuniio(&mut chuniio_state, &brokenithm_state, &mut self.last_coin_pulse);
 
                             // Store the applied state for future comparison
