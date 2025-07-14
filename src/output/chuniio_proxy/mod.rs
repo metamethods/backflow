@@ -379,9 +379,30 @@ impl ChuniioProxyServer {
             packet.device_id,
             packet.events.len()
         );
-        // --- Track actual IO state in memory (slider, IR, opbtn) ---
-        // Remove direct state updates here; only update state in main event loop
-        // Handle input events
+
+        // Check if this looks like a complete state batch from the web interface
+        let chuniio_events: Vec<_> = packet
+            .events
+            .iter()
+            .filter(|event| match event {
+                InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
+                | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
+                    key.starts_with("CHUNIIO_")
+                }
+                _ => false,
+            })
+            .collect();
+
+        // If we have a large number of CHUNIIO events (indicating a batch), process them atomically
+        if chuniio_events.len() > 10 {
+            trace!(
+                "Processing as atomic batch: {} CHUNIIO events",
+                chuniio_events.len()
+            );
+            return self.process_input_packet_batch(packet).await;
+        }
+
+        // Otherwise, process events individually (for compatibility with other input sources)
         for event in &packet.events {
             match &event {
                 InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
@@ -433,6 +454,100 @@ impl ChuniioProxyServer {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Process input packet as an atomic batch (for complete state updates from web interface)
+    async fn process_input_packet_batch(&mut self, packet: InputEventPacket) -> eyre::Result<()> {
+        trace!(
+            "Processing batch packet with {} events atomically",
+            packet.events.len()
+        );
+
+        // Extract current state and apply all changes atomically
+        let mut state = self.protocol_state.write().await;
+
+        // Reset slider state to zero (released state)
+        state.slider_state.pressure = [0; 32];
+
+        // Reset operator buttons and IR beams to default state
+        state.jvs_state.opbtn = 0;
+        state.jvs_state.beams = 0x3F; // All beams clear by default
+
+        // Apply all events in the batch
+        for event in &packet.events {
+            match &event {
+                InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
+                | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
+                    if !key.starts_with("CHUNIIO_") {
+                        continue;
+                    }
+                    let pressed =
+                        matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
+
+                    // Apply state changes directly without sending individual events
+                    if key == "CHUNIIO_COIN" && pressed {
+                        state.coin_counter += 1;
+                        trace!("Batch: Coin inserted, counter now: {}", state.coin_counter);
+                    } else if key == "CHUNIIO_TEST" {
+                        if pressed {
+                            state.jvs_state.opbtn |= CHUNI_IO_OPBTN_TEST;
+                        }
+                        trace!(
+                            "Batch: Test button {}",
+                            if pressed { "pressed" } else { "released" }
+                        );
+                    } else if key == "CHUNIIO_SERVICE" {
+                        if pressed {
+                            state.jvs_state.opbtn |= CHUNI_IO_OPBTN_SERVICE;
+                        }
+                        trace!(
+                            "Batch: Service button {}",
+                            if pressed { "pressed" } else { "released" }
+                        );
+                    } else if let Some(region_str) = key.strip_prefix("CHUNIIO_SLIDER_") {
+                        if let Ok(region) = region_str.parse::<u8>() {
+                            if region < 32 {
+                                let pressure = if pressed { 255 } else { 0 };
+                                state.slider_state.pressure[region as usize] = pressure;
+                                trace!("Batch: Slider region {} pressure {}", region, pressure);
+                            }
+                        }
+                    } else if let Some(beam_str) = key.strip_prefix("CHUNIIO_IR_") {
+                        if let Ok(beam) = beam_str.parse::<u8>() {
+                            if beam < 6 {
+                                if pressed {
+                                    state.jvs_state.beams &= !(1 << beam); // Break beam
+                                } else {
+                                    state.jvs_state.beams |= 1 << beam; // Restore beam
+                                }
+                                trace!(
+                                    "Batch: IR beam {} {}",
+                                    beam,
+                                    if pressed { "broken" } else { "restored" }
+                                );
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Ignore non-keyboard events in batch processing
+                }
+            }
+        }
+
+        trace!(
+            "Batch processing complete - opbtn: {}, beams: {:#06b}, slider active regions: {}",
+            state.jvs_state.opbtn,
+            state.jvs_state.beams,
+            state
+                .slider_state
+                .pressure
+                .iter()
+                .filter(|&&p| p > 0)
+                .count()
+        );
+
         Ok(())
     }
 

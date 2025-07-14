@@ -758,7 +758,7 @@ impl BrokenithmInputStateTracker {
     fn debounce_slider(&mut self, raw_slider: &[u8]) -> Vec<u8> {
         let now = std::time::Instant::now();
         let elapsed = now.duration_since(self.slider_debounce_time).as_millis() as u64;
-        
+
         // Update debounce buffer with weighted average
         if elapsed >= self.slider_debounce_ms {
             // Apply simple moving average: buffer = 0.7 * buffer + 0.3 * raw
@@ -770,13 +770,13 @@ impl BrokenithmInputStateTracker {
             }
             self.slider_debounce_time = now;
         }
-        
+
         // Apply threshold with hysteresis to debounced values
         let mut debounced = vec![0u8; 32];
         for i in 0..32 {
             let prev_active = self.prev_slider[i] >= 128;
             let smoothed_val = self.slider_debounce_buffer[i];
-            
+
             // Use hysteresis thresholds to prevent bouncing
             // Activate at 140, deactivate at 110
             if prev_active {
@@ -795,7 +795,7 @@ impl BrokenithmInputStateTracker {
                 }
             }
         }
-        
+
         debounced
     }
 
@@ -829,7 +829,10 @@ impl BrokenithmInputStateTracker {
 
         // Debug: log when debouncing makes a difference
         if slider != debounced_slider {
-            let changed_zones: Vec<usize> = slider.iter().zip(debounced_slider.iter()).enumerate()
+            let changed_zones: Vec<usize> = slider
+                .iter()
+                .zip(debounced_slider.iter())
+                .enumerate()
                 .filter_map(|(i, (&raw, &debounced))| if raw != debounced { Some(i) } else { None })
                 .collect();
             if !changed_zones.is_empty() {

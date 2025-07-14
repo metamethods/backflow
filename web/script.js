@@ -127,17 +127,17 @@ class WebSocketHandler {
 
   handleFeedbackPacket(packet) {
     console.log("🎨 Processing feedback packet:", packet);
-    
+
     // Batch DOM updates for better performance
     const ledUpdates = [];
-    
+
     // Collect all LED updates first
     for (const event of packet.events) {
       if (event.Led && event.Led.Set) {
         ledUpdates.push(event.Led.Set);
       }
     }
-    
+
     // Apply all LED updates in a single batch to minimize DOM reflows
     if (ledUpdates.length > 0) {
       // Use requestAnimationFrame to batch all DOM updates together
@@ -152,7 +152,7 @@ class WebSocketHandler {
   handleLedEvent(ledEvent) {
     const { led_id, on, brightness, rgb } = ledEvent;
     console.log(`💡 LED ${led_id}: on=${on}, brightness=${brightness}, rgb=${rgb}`);
-    
+
     // Find the corresponding grid cell
     const cell = this.getCellByLedId(led_id);
     if (cell) {
@@ -164,10 +164,10 @@ class WebSocketHandler {
     // Map LED IDs to grid cells with buttons first, air sensors last
     // LED IDs 0-15: Slider buttons (16 keys: q,w,e,r,t,y,u,i,o,p,a,s,d,f,g,h)
     // LED IDs 16-21: Air sensors (6 sensors: 1,2,3,4,5,6)
-    
+
     const airSensors = document.querySelectorAll('[data-cell-section="air-sensor"] .grid-cell');
     const sliderButtons = document.querySelectorAll('[data-cell-section="slider"] .grid-cell');
-    
+
     if (ledId >= 0 && ledId < 16) {
       // Slider buttons (LED IDs 0-15)
       return sliderButtons[ledId] || null;
@@ -176,7 +176,7 @@ class WebSocketHandler {
       const airIndex = ledId - 16;
       return airSensors[airIndex] || null;
     }
-    
+
     return null;
   }
 
@@ -192,7 +192,7 @@ class WebSocketHandler {
 
     let color = 'white';
     let r = 255, g = 255, b = 255;
-    
+
     if (rgb && Array.isArray(rgb) && rgb.length >= 3) {
       [r, g, b] = rgb;
       color = `rgb(${r}, ${g}, ${b})`;
@@ -207,7 +207,7 @@ class WebSocketHandler {
     // Store the RGB color for reference and create inset glow effect
     cell.setAttribute('data-rgb-color', color);
     cell.style.backgroundColor = color;
-    
+
     // Use inset box-shadow to prevent layout shifts, with the RGB color for glow
     const glowColor = `rgba(${r}, ${g}, ${b}, 0.6)`;
     cell.style.boxShadow = `inset 0 0 20px ${glowColor}`;
@@ -292,7 +292,8 @@ class GridController {
     });
     this.setupGlobalTouchHandlers();
     this.updateTouchCounter();
-    this.startStuckKeyCleanup();
+    // Remove the stuck key cleanup - it was causing legitimate holds to be released
+    // this.startStuckKeyCleanup();
 
     console.log(`Grid controller initialized with ${this.cells.length} cells`);
   }
@@ -302,7 +303,7 @@ class GridController {
     const now = Date.now();
     const eventType = pressed ? 'press' : 'release';
     const lastEventTime = this.lastEventTimestamp.get(key) || 0;
-    
+
     // For rapid multitouch, add slight debouncing
     if (now - lastEventTime < this.keyEventDebounceMs) {
       // Queue the event instead of sending immediately
@@ -312,13 +313,13 @@ class GridController {
         deviceName: deviceName,
         pressed: pressed
       });
-      
+
       // Clear any existing timeout for this key
       const timeoutKey = `timeout_${key}`;
       if (this[timeoutKey]) {
         clearTimeout(this[timeoutKey]);
       }
-      
+
       // Set a new timeout to send the queued event
       this[timeoutKey] = setTimeout(() => {
         const pendingEvent = this.pendingKeyEvents.get(key);
@@ -329,29 +330,30 @@ class GridController {
         }
         delete this[timeoutKey];
       }, this.keyEventDebounceMs);
-      
+
       return;
     }
-    
+
     // Send immediately if enough time has passed
     this.webSocketHandler.sendKeyboardEvent(key, pressed, deviceName);
     this.lastEventTimestamp.set(key, now);
   }
 
-  // Start periodic cleanup of stuck keys
+  // Start periodic cleanup of stuck keys - DISABLED to allow legitimate long holds
   startStuckKeyCleanup() {
-    this.cleanupInterval = setInterval(() => {
-      this.cleanupStuckKeys();
-      this.cleanupOrphanedTouches(); // Add orphaned touch cleanup
-      this.validateAndCleanupState(); // Add state validation
-    }, 500); // Check every 500ms instead of 1000ms for better responsiveness
+    // Commented out - this was causing legitimate key holds to be released
+    // this.cleanupInterval = setInterval(() => {
+    //   this.cleanupStuckKeys();
+    //   this.cleanupOrphanedTouches(); // Add orphaned touch cleanup
+    //   this.validateAndCleanupState(); // Add state validation
+    // }, 500); // Check every 500ms instead of 1000ms for better responsiveness
   }
 
   // Clean up touches that may have been orphaned during rapid multitouch
   cleanupOrphanedTouches() {
     const now = Date.now();
     const orphanTimeout = 2000; // 2 seconds
-    
+
     // Check for touches that have been active too long without movement
     const orphanedTouches = [];
     this.activeTouches.forEach((touchData, touchId) => {
@@ -359,7 +361,7 @@ class GridController {
         orphanedTouches.push(touchId);
       }
     });
-    
+
     // Clean up orphaned touches
     orphanedTouches.forEach(touchId => {
       console.warn(`🧹 Cleaning up orphaned touch: ${touchId}`);
@@ -371,12 +373,12 @@ class GridController {
   validateAndCleanupState() {
     const now = Date.now();
     let fixedIssues = 0;
-    
+
     // Check for pressed keys that don't have corresponding touch counts
     this.pressedKeys.forEach((pressInfo, key) => {
       const cellIndex = pressInfo.cellIndex;
       const touchCount = this.cellTouchCounts.get(cellIndex) || 0;
-      
+
       // If a key is pressed but no touches are tracked for that cell, it's stuck
       if (touchCount === 0) {
         console.warn(`🔧 Found stuck key ${key} with no active touches, force releasing`);
@@ -384,7 +386,7 @@ class GridController {
         fixedIssues++;
       }
     });
-    
+
     // Check for touch counts that don't have corresponding active touches
     this.cellTouchCounts.forEach((count, cellIndex) => {
       if (count > 0) {
@@ -395,11 +397,11 @@ class GridController {
             actualTouches++;
           }
         });
-        
+
         if (actualTouches !== count) {
           console.warn(`🔧 Cell ${cellIndex} has touch count ${count} but only ${actualTouches} active touches, correcting`);
           this.cellTouchCounts.set(cellIndex, actualTouches);
-          
+
           // If no actual touches but we have a key pressed for this cell, release it
           if (actualTouches === 0) {
             const cell = this.cells[cellIndex];
@@ -414,16 +416,19 @@ class GridController {
         }
       }
     });
-    
+
     if (fixedIssues > 0) {
       console.log(`🔧 State validation fixed ${fixedIssues} issues`);
     }
-    
+
     return fixedIssues;
   }
 
-  // Clean up keys that have been pressed for too long
+  // Clean up keys that have been pressed for too long - DISABLED
   cleanupStuckKeys() {
+    // This was causing legitimate long key holds to be released
+    // Commenting out for now - rely on touch end events instead
+    /*
     const now = Date.now();
     const stuckKeys = [];
     
@@ -439,6 +444,7 @@ class GridController {
       // Force release the key
       this.forceReleaseKey(key, pressInfo.cellIndex, "stuck_key_cleanup");
     });
+    */
   }
 
   // Force release a key and clean up all associated state
@@ -446,21 +452,21 @@ class GridController {
     // Send keyboard release event
     const deviceName = this.getDeviceNameForCell(this.cells[cellIndex]);
     this.sendDebouncedKeyboardEvent(key, false, deviceName);
-    
+
     // Remove from pressed keys tracking
     this.pressedKeys.delete(key);
-    
+
     // Reset touch counts for this cell
     this.cellTouchCounts.set(cellIndex, 0);
-    
+
     // Clear visual touches for this cell
     this.cellVisualTouches.get(cellIndex)?.clear();
-    
+
     // Clear visual feedback
     const cell = this.cells[cellIndex];
     if (cell) {
       this.feedbackHandler.deactivateCell(cell);
-      
+
       // Dispatch release event
       cell.dispatchEvent(
         new CustomEvent("cellrelease", {
@@ -474,7 +480,7 @@ class GridController {
         }),
       );
     }
-    
+
     console.log(`🔥 Force released key: ${key} (reason: ${reason})`);
   }
 
@@ -511,13 +517,13 @@ class GridController {
           if (currentCount === 0) {
             const key = this.mapCellToKey(e.target);
             const deviceName = this.getDeviceNameForCell(e.target);
-            
+
             // Track this key as pressed
             this.pressedKeys.set(key, {
               startTime: Date.now(),
               cellIndex: cellIndex
             });
-            
+
             this.webSocketHandler.sendKeyboardEvent(key, true, deviceName);
 
             e.target.dispatchEvent(
@@ -556,7 +562,7 @@ class GridController {
             console.warn(`👆 Duplicate touch start for ID ${touch.identifier}, ignoring`);
             return;
           }
-          
+
           const elementUnderTouch = document.elementFromPoint(
             touch.clientX,
             touch.clientY,
@@ -601,7 +607,7 @@ class GridController {
                 console.log("👆 First touch on cell, sending keyboard event");
                 const key = this.mapCellToKey(elementUnderTouch);
                 const deviceName = this.getDeviceNameForCell(elementUnderTouch);
-                
+
                 // Double-check we're not already tracking this key as pressed
                 if (!this.pressedKeys.has(key)) {
                   // Track this key as pressed
@@ -609,7 +615,7 @@ class GridController {
                     startTime: Date.now(),
                     cellIndex: cellIndex
                   });
-                  
+
                   this.sendDebouncedKeyboardEvent(key, true, deviceName);
 
                   elementUnderTouch.dispatchEvent(
@@ -700,12 +706,12 @@ class GridController {
         // Send keyboard release event
         const key = this.mapCellToKey(touchData.cell);
         const deviceName = this.getDeviceNameForCell(touchData.cell);
-        
+
         // Validate that this key is actually pressed before releasing
         if (this.pressedKeys.has(key)) {
           // Remove from pressed keys tracking
           this.pressedKeys.delete(key);
-          
+
           this.sendDebouncedKeyboardEvent(key, false, deviceName);
 
           touchData.cell.dispatchEvent(
@@ -737,7 +743,7 @@ class GridController {
         "🔴 Touch end but no touch data found for:",
         touch.identifier,
       );
-      
+
       // Emergency cleanup: if we somehow lost track of a touch, 
       // try to find any orphaned key presses and clean them up
       this.validateAndCleanupState();
@@ -834,7 +840,7 @@ class GridController {
     this.pressedKeys.forEach((pressInfo, key) => {
       this.forceReleaseKey(key, pressInfo.cellIndex, "manual_reset");
     });
-    
+
     this.activeTouches.clear();
     this.pressedKeys.clear();
     this.cellTouchCounts.forEach((_, index) => {
@@ -912,12 +918,12 @@ class GridController {
           if (newOldCount === 0) {
             const oldKey = this.mapCellToKey(touchData.cell);
             const oldDeviceName = this.getDeviceNameForCell(touchData.cell);
-            
+
             // Only release if we're actually tracking this key as pressed
             if (this.pressedKeys.has(oldKey)) {
               // Remove from pressed keys tracking
               this.pressedKeys.delete(oldKey);
-              
+
               this.sendDebouncedKeyboardEvent(
                 oldKey,
                 false,
@@ -965,7 +971,7 @@ class GridController {
           if (newCount === 0) {
             const key = this.mapCellToKey(elementUnderTouch);
             const deviceName = this.getDeviceNameForCell(elementUnderTouch);
-            
+
             // Double-check we're not already tracking this key as pressed
             if (!this.pressedKeys.has(key)) {
               // Track this key as pressed
@@ -973,7 +979,7 @@ class GridController {
                 startTime: Date.now(),
                 cellIndex: newCellIndex
               });
-              
+
               this.sendDebouncedKeyboardEvent(key, true, deviceName);
 
               elementUnderTouch.dispatchEvent(
@@ -1008,16 +1014,17 @@ class GridController {
 
   // Cleanup method to stop intervals and release resources
   destroy() {
-    if (this.cleanupInterval) {
-      clearInterval(this.cleanupInterval);
-      this.cleanupInterval = null;
-    }
-    
+    // No cleanup interval to stop anymore since we disabled stuck key cleanup
+    // if (this.cleanupInterval) {
+    //   clearInterval(this.cleanupInterval);
+    //   this.cleanupInterval = null;
+    // }
+
     // Force release all pressed keys
     this.pressedKeys.forEach((pressInfo, key) => {
       this.forceReleaseKey(key, pressInfo.cellIndex, "destroy");
     });
-    
+
     console.log("GridController destroyed and cleaned up");
   }
 
@@ -1025,13 +1032,13 @@ class GridController {
   releaseAllStuckKeys() {
     const now = Date.now();
     let releasedCount = 0;
-    
+
     this.pressedKeys.forEach((pressInfo, key) => {
       console.log(`🔥 Force releasing potentially stuck key: ${key} (pressed for ${now - pressInfo.startTime}ms)`);
       this.forceReleaseKey(key, pressInfo.cellIndex, "manual_stuck_key_release");
       releasedCount++;
     });
-    
+
     console.log(`🔥 Released ${releasedCount} potentially stuck keys`);
     return releasedCount;
   }
