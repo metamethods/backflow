@@ -5,6 +5,12 @@ use eyre::Result;
 use zbus_inputplumber::interface::mouse::MouseProxy;
 
 use crate::input::{InputEvent, InputEventPacket, InputEventStream, KeyboardEvent, PointerEvent};
+
+#[derive(Debug, Clone)]
+struct KeyState {
+    pressed: bool,
+    last_timestamp: u64,
+}
 use crate::output::OutputBackend;
 use zbus_inputplumber::interface::{
     gamepad::GamepadProxy,
@@ -154,6 +160,8 @@ pub struct DbusPlumberOutput {
     pub stream: InputEventStream,
     // sender for D-Bus messages
     pub backend: PlumberOutputBackend,
+    // Key state tracking to prevent out-of-order events
+    key_states: HashMap<String, KeyState>,
 }
 
 impl DbusPlumberOutput {
@@ -163,6 +171,7 @@ impl DbusPlumberOutput {
         Self {
             stream,
             backend: PlumberOutputBackend::new().await.unwrap(),
+            key_states: HashMap::new(),
         }
     }
 
@@ -170,15 +179,15 @@ impl DbusPlumberOutput {
         tracing::info!("Received input event packet: {:?}", packet);
 
         for event in packet.events {
-            self.handle_event(event).await?;
+            self.handle_event(event, packet.timestamp).await?;
         }
         Ok(())
     }
 
-    async fn handle_event(&mut self, event: InputEvent) -> Result<()> {
+    async fn handle_event(&mut self, event: InputEvent, timestamp: u64) -> Result<()> {
         match event {
             InputEvent::Keyboard(keyboard_event) => {
-                self.handle_keyboard_event(keyboard_event).await
+                self.handle_keyboard_event(keyboard_event, timestamp).await
             }
             InputEvent::Pointer(pointer_event) => self.handle_pointer_event(pointer_event).await,
             _ => {
@@ -189,7 +198,7 @@ impl DbusPlumberOutput {
         }
     }
 
-    async fn handle_keyboard_event(&mut self, event: KeyboardEvent) -> Result<()> {
+    async fn handle_keyboard_event(&mut self, event: KeyboardEvent, timestamp: u64) -> Result<()> {
         let Some(kb_device) = self.backend.keyboard() else {
             tracing::warn!("No keyboard device available");
             return Ok(());
@@ -202,9 +211,35 @@ impl DbusPlumberOutput {
 
         match event {
             KeyboardEvent::KeyPress { key } => {
+                // Get the current state for this specific key only
+                let current_state = self.key_states.get(&key);
+                
+                // Check if we should ignore this KeyPress due to out-of-order timing
+                // Only ignore if:
+                // 1. We have a previous state for this key
+                // 2. The key is currently not pressed 
+                // 3. This timestamp is older than the last timestamp for THIS SPECIFIC KEY
+                if let Some(state) = current_state {
+                    if !state.pressed && timestamp < state.last_timestamp {
+                        tracing::warn!("Ignoring out-of-order KeyPress for key '{}' (timestamp: {}, last: {})", 
+                                     key, timestamp, state.last_timestamp);
+                        return Ok(());
+                    }
+                }
+
+                // Update state for this specific key and send the key press
+                self.key_states.insert(key.clone(), KeyState {
+                    pressed: true,
+                    last_timestamp: timestamp,
+                });
                 proxy.send_key(&key, true).await?;
             }
             KeyboardEvent::KeyRelease { key } => {
+                // Always allow KeyRelease events and update state for this specific key
+                self.key_states.insert(key.clone(), KeyState {
+                    pressed: false,
+                    last_timestamp: timestamp,
+                });
                 proxy.send_key(&key, false).await?;
             }
         }
