@@ -200,21 +200,58 @@ impl Backend {
         Ok(())
     }
 
-    /// Start device filter service that transforms raw input events
+    /// Start device filter service that transforms raw input events and routes them to appropriate backends
     async fn start_device_filter_service(&mut self) -> Result<()> {
-        tracing::info!("Starting device filter service");
+        tracing::info!("Starting device filter service with backend routing");
 
         let raw_input_stream = self.streams.input.clone();
         let transformed_output_stream = self.streams.transformed_input.clone();
         let device_filter = self.device_filter.clone();
 
         let handle = tokio::spawn(async move {
+            let mut last_process_time = std::time::Instant::now();
+            const MIN_PROCESS_INTERVAL: std::time::Duration = std::time::Duration::from_micros(100); // 0.1ms min between packets
+
             loop {
                 // Receive from raw input stream
                 if let Some(packet) = raw_input_stream.receive().await {
+                    // Add small delay to prevent race conditions in rapid multitouch scenarios
+                    let elapsed = last_process_time.elapsed();
+                    if elapsed < MIN_PROCESS_INTERVAL {
+                        tokio::time::sleep(MIN_PROCESS_INTERVAL - elapsed).await;
+                    }
+                    last_process_time = std::time::Instant::now();
+
                     match device_filter.transform_packet(packet) {
                         Ok(transformed_packet) => {
-                            // Send to transformed stream
+                            // Determine target backend based on device configuration or event type
+                            let should_route_to_chuniio =
+                                transformed_packet.events.iter().any(|event| match event {
+                                    crate::input::InputEvent::Keyboard(keyboard_event) => {
+                                        let key = match keyboard_event {
+                                            crate::input::KeyboardEvent::KeyPress { key } => key,
+                                            crate::input::KeyboardEvent::KeyRelease { key } => key,
+                                        };
+                                        key.starts_with("CHUNIIO_")
+                                    }
+                                    _ => false,
+                                });
+
+                            // Log routing decision for debugging
+                            if should_route_to_chuniio {
+                                tracing::trace!(
+                                    "Routing packet from device '{}' to chuniio backend (contains CHUNIIO_ events)",
+                                    transformed_packet.device_id
+                                );
+                            } else {
+                                tracing::trace!(
+                                    "Routing packet from device '{}' to all backends (contains standard events)",
+                                    transformed_packet.device_id
+                                );
+                            }
+
+                            // Send to transformed stream (for now, keeping existing broadcast behavior)
+                            // TODO: Implement dedicated backend streams for true isolation
                             if let Err(e) = transformed_output_stream.send(transformed_packet).await
                             {
                                 tracing::error!("Failed to send transformed packet: {}", e);

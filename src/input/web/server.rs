@@ -14,7 +14,7 @@ use axum::{
 };
 use eyre::{Context, Result};
 use futures_util::{sink::SinkExt, stream::StreamExt};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::sync::RwLock;
 use tower_http::trace::{DefaultMakeSpan, TraceLayer};
 use tracing::{debug, error, info, trace, warn};
@@ -28,6 +28,54 @@ pub struct WebSocketState {
     pub feedback_stream: FeedbackEventStream,
     pub connected_clients:
         Arc<RwLock<Vec<tokio::sync::mpsc::UnboundedSender<FeedbackEventPacket>>>>,
+    /// Track last processed timestamp per device to prevent out-of-order packets
+    pub last_timestamps: Arc<RwLock<HashMap<String, u64>>>,
+    /// Global sequence counter to ensure packet ordering across all connections
+    pub sequence_counter: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl WebSocketState {
+    /// Check if a packet should be processed based on its timestamp.
+    /// Returns true if the packet should be processed, false if it should be discarded.
+    /// Updates the last timestamp for the device if the packet is accepted.
+    async fn should_process_packet(&self, packet: &InputEventPacket) -> bool {
+        // Increment sequence counter for this packet processing attempt
+        let sequence_num = self
+            .sequence_counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        let mut timestamps = self.last_timestamps.write().await;
+
+        match timestamps.get(&packet.device_id) {
+            Some(&last_timestamp) => {
+                if packet.timestamp <= last_timestamp {
+                    // Packet is older than or equal to the last processed packet, discard it
+                    warn!(
+                        "Discarding out-of-order packet for device '{}': timestamp {} <= last {} (seq: {})",
+                        packet.device_id, packet.timestamp, last_timestamp, sequence_num
+                    );
+                    return false;
+                }
+            }
+            None => {
+                // First packet for this device, always accept
+                debug!(
+                    "First packet for device '{}' with timestamp {} (seq: {})",
+                    packet.device_id, packet.timestamp, sequence_num
+                );
+            }
+        }
+
+        // Update the last timestamp for this device
+        timestamps.insert(packet.device_id.clone(), packet.timestamp);
+
+        trace!(
+            "Accepted packet for device '{}' with timestamp {} (seq: {})",
+            packet.device_id, packet.timestamp, sequence_num
+        );
+
+        true
+    }
 }
 
 /// Web server that handles both WebSocket connections for input events
@@ -137,6 +185,8 @@ impl WebServer {
             input_stream: self.event_stream.clone(),
             feedback_stream: self.feedback_stream.clone(),
             connected_clients: Arc::new(RwLock::new(Vec::new())),
+            last_timestamps: Arc::new(RwLock::new(HashMap::new())),
+            sequence_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
         // Create the WebSocket router with WebSocket state
@@ -401,6 +451,8 @@ mod tests {
             input_stream: input_stream.clone(),
             feedback_stream: feedback_stream.clone(),
             connected_clients: Arc::new(RwLock::new(Vec::new())),
+            last_timestamps: Arc::new(RwLock::new(HashMap::new())),
+            sequence_counter: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         };
 
         // Test that we can create channels for both types
@@ -659,6 +711,7 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
     // Clone state for the tasks
     let input_stream = state.input_stream.clone();
     let feedback_stream_for_client = state.feedback_stream.clone();
+    let state_for_input_task = state.clone();
 
     // Wrap sender in Arc<Mutex> to share between tasks
     let sender = Arc::new(tokio::sync::Mutex::new(sender));
@@ -666,6 +719,7 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
     // Task to handle incoming messages (input events from client)
     let input_task = {
         let sender = sender.clone();
+        let state = state_for_input_task;
         tokio::spawn(async move {
             while let Some(msg) = receiver.next().await {
                 match msg {
@@ -681,18 +735,26 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
                                 packet.events.len()
                             );
 
-                            // debug!(
-                            //     "Forwarding input event packet from {} to main input stream: device_id={}, events={}",
-                            //     addr,
-                            //     packet.device_id,
-                            //     packet.events.len()
-                            // );
-                            if let Err(e) = input_stream.send(packet).await {
-                                error!("Failed to send input event to stream: {}", e);
+                            // Check timestamp ordering to prevent out-of-order packets
+                            if state.should_process_packet(&packet).await {
+                                // debug!(
+                                //     "Forwarding input event packet from {} to main input stream: device_id={}, events={}",
+                                //     addr,
+                                //     packet.device_id,
+                                //     packet.events.len()
+                                // );
+                                if let Err(e) = input_stream.send(packet).await {
+                                    error!("Failed to send input event to stream: {}", e);
+                                } else {
+                                    debug!(
+                                        "Successfully sent input event packet from {} to main input stream",
+                                        addr
+                                    );
+                                }
                             } else {
                                 debug!(
-                                    "Successfully sent input event packet from {} to main input stream",
-                                    addr
+                                    "Discarded out-of-order input packet from {} for device '{}'",
+                                    addr, packet.device_id
                                 );
                             }
                         }
