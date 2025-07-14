@@ -86,6 +86,7 @@
 use crate::CHANNEL_BUFFER_SIZE;
 use crate::feedback::FeedbackEventStream;
 use crate::feedback::generators::chuni_jvs::{ChuniLedDataPacket, LedBoardData, Rgb};
+use crate::input::brokenithm::{BrokenithmInputState, get_brokenithm_state};
 use crate::input::{
     InputEvent, InputEventPacket, InputEventReceiver, InputEventStream, KeyboardEvent,
 };
@@ -98,11 +99,66 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{RwLock, mpsc};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 /// Default socket path for chuniio proxy
 const DEFAULT_SOCKET_PATH: &str = "/tmp/backflow_chuniio.sock";
 
+/// Check if Brokenithm state has changed compared to previous state
+fn brokenithm_state_changed(
+    current: &BrokenithmInputState,
+    previous: &Option<BrokenithmInputState>,
+) -> bool {
+    match previous {
+        None => true,                  // First time, always apply
+        Some(prev) => current != prev, // Use PartialEq for comparison
+    }
+}
+
+/// Convert Brokenithm state to chuniio protocol state
+fn apply_brokenithm_state_to_chuniio(
+    chuniio_state: &mut ChuniProtocolState,
+    brokenithm_state: &BrokenithmInputState,
+    last_coin_pulse: &mut bool,
+) {
+    // Update operator buttons
+    let mut opbtn = 0;
+    if brokenithm_state.test_button {
+        opbtn |= CHUNI_IO_OPBTN_TEST;
+    }
+    if brokenithm_state.service_button {
+        opbtn |= CHUNI_IO_OPBTN_SERVICE;
+    }
+    chuniio_state.jvs_state.opbtn = opbtn;
+
+    // Update IR beams (air sensors) - invert logic: air sensor active = beam broken
+    let mut beams = 0x3F; // All beams clear by default
+    for (i, &air_value) in brokenithm_state.air.iter().enumerate() {
+        if air_value > 0 && i < 6 {
+            beams &= !(1 << i); // Break beam when air sensor is active
+        }
+    }
+    chuniio_state.jvs_state.beams = beams;
+
+    // Update slider pressure - directly copy from Brokenithm state
+    for (i, &pressure) in brokenithm_state.slider.iter().enumerate() {
+        if i < 32 {
+            chuniio_state.slider_state.pressure[i] = pressure;
+        }
+    }
+
+    // Handle coin pulse - increment coin counter if coin was inserted (edge detection)
+    if brokenithm_state.coin_pulse && !*last_coin_pulse {
+        chuniio_state.coin_counter += 1;
+        trace!(
+            "Coin pulse detected from Brokenithm state, coin counter now: {}",
+            chuniio_state.coin_counter
+        );
+    }
+    *last_coin_pulse = brokenithm_state.coin_pulse;
+}
+
+// ...existing code...
 /// Chuniio proxy server that handles bidirectional communication
 pub struct ChuniioProxyServer {
     socket_path: PathBuf,
@@ -111,6 +167,8 @@ pub struct ChuniioProxyServer {
     input_receiver: InputEventReceiver,
     feedback_stream: FeedbackEventStream,
     led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
+    last_coin_pulse: bool, // Track coin pulse state for edge detection
+    last_brokenithm_state: Option<BrokenithmInputState>, // Track last applied Brokenithm state for change detection
 }
 
 impl ChuniioProxyServer {
@@ -140,6 +198,8 @@ impl ChuniioProxyServer {
             input_receiver: input_stream.subscribe(),
             feedback_stream,
             led_packet_tx,
+            last_coin_pulse: false,
+            last_brokenithm_state: None,
         }
     }
 }
@@ -195,11 +255,47 @@ impl OutputBackend for ChuniioProxyServer {
             }
         });
 
-        // Main loop: convert input events to chuniio events
+        // Create a polling timer for Brokenithm state (60 FPS for smooth updates)
+        let mut poll_interval = tokio::time::interval(tokio::time::Duration::from_millis(16));
+        poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Main loop: convert input events to chuniio events and poll Brokenithm state
         loop {
             tokio::select! {
-                // Handle input events from the application
+                // Poll Brokenithm shared state periodically
+                _ = poll_interval.tick() => {
+                    if let Some(brokenithm_state) = get_brokenithm_state().await {
+                        // Only apply state if it has changed to avoid redundant updates
+                        if brokenithm_state_changed(&brokenithm_state, &self.last_brokenithm_state) {
+                            let mut chuniio_state = self.protocol_state.write().await;
+                            // tracing::debug!("Brokenithm state changed, applying to chuniio state: air={:?}, slider_sum={}, test={}, service={}, coin_pulse={}",
+                            //     brokenithm_state.air,
+                            //     brokenithm_state.slider.iter().map(|&x| x as u32).sum::<u32>(),
+                            //     brokenithm_state.test_button,
+                            //     brokenithm_state.service_button,
+                            //     brokenithm_state.coin_pulse
+                            // );
+                            apply_brokenithm_state_to_chuniio(&mut chuniio_state, &brokenithm_state, &mut self.last_coin_pulse);
+
+                            // Store the applied state for future comparison
+                            self.last_brokenithm_state = Some(brokenithm_state);
+                        } else {
+                            // State hasn't changed, no need to apply
+                            // tracing::trace!("Brokenithm state unchanged, skipping state application");
+                        }
+                    }
+                }
+
+                // Handle input events from the application (for non-Brokenithm devices)
                 packet = self.input_receiver.receive() => {
+                    // Skip processing input events if Brokenithm shared state is available
+                    // to avoid interference between polling-based and event-based state updates
+                    if get_brokenithm_state().await.is_some() {
+                        tracing::trace!("Skipping input packet processing - Brokenithm shared state is active");
+                        continue;
+                    }
+
+                    tracing::trace!("Received input packet from application");
                     match packet {
                         Some(packet) => {
                             if let Err(e) = self.process_input_packet(packet, &input_tx).await {
@@ -213,16 +309,23 @@ impl OutputBackend for ChuniioProxyServer {
                     }
                 }
 
-                // Handle chuniio input events from clients
+                // Handle chuniio input events from clients (legacy event-based path)
                 chuni_event = input_rx.recv() => {
                     match chuni_event {
                         Some(event) => {
+                            // Skip processing chuniio events if Brokenithm shared state is available
+                            // to avoid interference with polling-based state updates
+                            if get_brokenithm_state().await.is_some() {
+                                tracing::trace!("Skipping chuniio event processing - Brokenithm shared state is active: {:?}", event);
+                                continue;
+                            }
+
                             trace!("Processing chuniio event in proxy: {:?}", event);
                             // Update internal state - use blocking write to ensure all events are processed
                             let mut state = self.protocol_state.write().await;
                             state.process_input_event(event);
-                            // trace!("Updated proxy state - opbtn: {}, beams: {}, coins: {}\nslider: {:?}",
-                            //       state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter, state.slider_state.pressure);
+                            trace!("Updated proxy state - opbtn: {}, beams: {}, coins: {}\nslider: {:?}",
+                                  state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter, state.slider_state.pressure);
                         }
                         None => {
                             tracing::debug!("Chuniio input channel closed");
