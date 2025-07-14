@@ -29,7 +29,10 @@ class WebSocketHandler {
             this.handleFeedbackPacket(data);
           }
         } catch (e) {
-          console.warn("Failed to parse WebSocket message as feedback packet:", e);
+          console.warn(
+            "Failed to parse WebSocket message as feedback packet:",
+            e,
+          );
         }
       };
 
@@ -103,10 +106,14 @@ class WebSocketHandler {
     const sendWithRetry = (attempt = 1) => {
       const success = this.sendInputEvent(deviceId, events);
       if (!success && attempt < 3) {
-        console.warn(`🔄 Keyboard event send failed (attempt ${attempt}), retrying...`);
+        console.warn(
+          `🔄 Keyboard event send failed (attempt ${attempt}), retrying...`,
+        );
         setTimeout(() => sendWithRetry(attempt + 1), 10 * attempt); // exponential backoff
       } else if (!success) {
-        console.error(`❌ Keyboard event send failed after 3 attempts: ${key} ${eventType}`);
+        console.error(
+          `❌ Keyboard event send failed after 3 attempts: ${key} ${eventType}`,
+        );
       }
     };
 
@@ -151,7 +158,9 @@ class WebSocketHandler {
 
   handleLedEvent(ledEvent) {
     const { led_id, on, brightness, rgb } = ledEvent;
-    console.log(`💡 LED ${led_id}: on=${on}, brightness=${brightness}, rgb=${rgb}`);
+    console.log(
+      `💡 LED ${led_id}: on=${on}, brightness=${brightness}, rgb=${rgb}`,
+    );
 
     // Find the corresponding grid cell
     const cell = this.getCellByLedId(led_id);
@@ -165,8 +174,12 @@ class WebSocketHandler {
     // LED IDs 0-15: Slider buttons (16 keys: q,w,e,r,t,y,u,i,o,p,a,s,d,f,g,h)
     // LED IDs 16-21: Air sensors (6 sensors: 1,2,3,4,5,6)
 
-    const airSensors = document.querySelectorAll('[data-cell-section="air-sensor"] .grid-cell');
-    const sliderButtons = document.querySelectorAll('[data-cell-section="slider"] .grid-cell');
+    const airSensors = document.querySelectorAll(
+      '[data-cell-section="air-sensor"] .grid-cell',
+    );
+    const sliderButtons = document.querySelectorAll(
+      '[data-cell-section="slider"] .grid-cell',
+    );
 
     if (ledId >= 0 && ledId < 16) {
       // Slider buttons (LED IDs 0-15)
@@ -183,15 +196,17 @@ class WebSocketHandler {
   applyLedToCell(cell, on, brightness, rgb) {
     if (!on) {
       // Turn off LED - remove RGB styling but keep any existing active state
-      cell.style.removeProperty('background-color');
-      cell.style.removeProperty('box-shadow');
-      cell.classList.remove('rgb-active');
-      cell.removeAttribute('data-rgb-color');
+      cell.style.removeProperty("background-color");
+      cell.style.removeProperty("box-shadow");
+      cell.classList.remove("rgb-active");
+      cell.removeAttribute("data-rgb-color");
       return;
     }
 
-    let color = 'white';
-    let r = 255, g = 255, b = 255;
+    let color = "white";
+    let r = 255,
+      g = 255,
+      b = 255;
 
     if (rgb && Array.isArray(rgb) && rgb.length >= 3) {
       [r, g, b] = rgb;
@@ -205,16 +220,14 @@ class WebSocketHandler {
     }
 
     // Store the RGB color for reference and create inset glow effect
-    cell.setAttribute('data-rgb-color', color);
+    cell.setAttribute("data-rgb-color", color);
     cell.style.backgroundColor = color;
 
     // Use inset box-shadow to prevent layout shifts, with the RGB color for glow
     const glowColor = `rgba(${r}, ${g}, ${b}, 0.6)`;
     cell.style.boxShadow = `inset 0 0 20px ${glowColor}`;
-    cell.classList.add('rgb-active');
+    cell.classList.add("rgb-active");
   }
-
-
 
   close() {
     if (this.ws) {
@@ -224,7 +237,6 @@ class WebSocketHandler {
   }
 }
 
-// Enhanced cell feedback handler with improved performance
 class CellFeedbackHandler {
   constructor() {
     this.activeCells = new Set();
@@ -279,6 +291,10 @@ class GridController {
     this.lastEventTimestamp = new Map(); // key -> timestamp to prevent rapid duplicate events
     this.pendingKeyEvents = new Map(); // key -> {type: 'press'|'release', timestamp} for debouncing
     this.keyEventDebounceMs = 16; // ~60fps debouncing for key events
+    this.cellOverlapEnabled = true; // Enable cell overlap by default
+    this.edgeOverlapThreshold = 15; // Pixels from edge to trigger overlap
+    this.overlapActivations = new Map(); // touchId -> array of overlapped cell indices
+
     this.init();
   }
 
@@ -292,26 +308,24 @@ class GridController {
     });
     this.setupGlobalTouchHandlers();
     this.updateTouchCounter();
-    // Remove the stuck key cleanup - it was causing legitimate holds to be released
     // this.startStuckKeyCleanup();
 
     console.log(`Grid controller initialized with ${this.cells.length} cells`);
   }
 
-  // Send a debounced keyboard event to prevent rapid duplicates
+  // Debounce keyboard events
   sendDebouncedKeyboardEvent(key, pressed, deviceName) {
     const now = Date.now();
-    const eventType = pressed ? 'press' : 'release';
+    const eventType = pressed ? "press" : "release";
     const lastEventTime = this.lastEventTimestamp.get(key) || 0;
 
-    // For rapid multitouch, add slight debouncing
     if (now - lastEventTime < this.keyEventDebounceMs) {
-      // Queue the event instead of sending immediately
+      // event queue
       this.pendingKeyEvents.set(key, {
         type: eventType,
         timestamp: now,
         deviceName: deviceName,
-        pressed: pressed
+        pressed: pressed,
       });
 
       // Clear any existing timeout for this key
@@ -324,7 +338,11 @@ class GridController {
       this[timeoutKey] = setTimeout(() => {
         const pendingEvent = this.pendingKeyEvents.get(key);
         if (pendingEvent) {
-          this.webSocketHandler.sendKeyboardEvent(pendingEvent.pressed ? key : key, pendingEvent.pressed, pendingEvent.deviceName);
+          this.webSocketHandler.sendKeyboardEvent(
+            pendingEvent.pressed ? key : key,
+            pendingEvent.pressed,
+            pendingEvent.deviceName,
+          );
           this.lastEventTimestamp.set(key, pendingEvent.timestamp);
           this.pendingKeyEvents.delete(key);
         }
@@ -339,9 +357,8 @@ class GridController {
     this.lastEventTimestamp.set(key, now);
   }
 
-  // Start periodic cleanup of stuck keys - DISABLED to allow legitimate long holds
   startStuckKeyCleanup() {
-    // Commented out - this was causing legitimate key holds to be released
+    // this was causing legitimate key holds to be released
     // this.cleanupInterval = setInterval(() => {
     //   this.cleanupStuckKeys();
     //   this.cleanupOrphanedTouches(); // Add orphaned touch cleanup
@@ -363,7 +380,7 @@ class GridController {
     });
 
     // Clean up orphaned touches
-    orphanedTouches.forEach(touchId => {
+    orphanedTouches.forEach((touchId) => {
       console.warn(`🧹 Cleaning up orphaned touch: ${touchId}`);
       this.handleTouchEnd({ identifier: touchId }, "orphaned_cleanup");
     });
@@ -381,7 +398,9 @@ class GridController {
 
       // If a key is pressed but no touches are tracked for that cell, it's stuck
       if (touchCount === 0) {
-        console.warn(`🔧 Found stuck key ${key} with no active touches, force releasing`);
+        console.warn(
+          `🔧 Found stuck key ${key} with no active touches, force releasing`,
+        );
         this.forceReleaseKey(key, cellIndex, "state_validation_cleanup");
         fixedIssues++;
       }
@@ -399,7 +418,9 @@ class GridController {
         });
 
         if (actualTouches !== count) {
-          console.warn(`🔧 Cell ${cellIndex} has touch count ${count} but only ${actualTouches} active touches, correcting`);
+          console.warn(
+            `🔧 Cell ${cellIndex} has touch count ${count} but only ${actualTouches} active touches, correcting`,
+          );
           this.cellTouchCounts.set(cellIndex, actualTouches);
 
           // If no actual touches but we have a key pressed for this cell, release it
@@ -427,11 +448,11 @@ class GridController {
   // Clean up keys that have been pressed for too long - DISABLED
   cleanupStuckKeys() {
     // This was causing legitimate long key holds to be released
-    // Commenting out for now - rely on touch end events instead
+    // commenting out for now - rely on touch end events instead
     /*
     const now = Date.now();
     const stuckKeys = [];
-    
+
     this.pressedKeys.forEach((pressInfo, key) => {
       if (now - pressInfo.startTime > this.stuckKeyTimeout) {
         stuckKeys.push({key, pressInfo});
@@ -440,7 +461,7 @@ class GridController {
 
     stuckKeys.forEach(({key, pressInfo}) => {
       console.warn(`🔥 STUCK KEY DETECTED: ${key} (pressed for ${now - pressInfo.startTime}ms), force releasing`);
-      
+
       // Force release the key
       this.forceReleaseKey(key, pressInfo.cellIndex, "stuck_key_cleanup");
     });
@@ -484,13 +505,8 @@ class GridController {
     console.log(`🔥 Force released key: ${key} (reason: ${reason})`);
   }
 
-  setupCellHandlers(cell, index) {
-    // Remove individual cell touch handlers - we'll handle everything globally
-    // This ensures proper multitouch support across the entire grid
-  }
-
   setupGlobalTouchHandlers() {
-    // Add mouse support for testing - this should work in Safari
+    // mouse support (dont need, mostly only for test)
     document.addEventListener("mousedown", (e) => {
       if (e.target.classList.contains("grid-cell")) {
         console.log(
@@ -500,39 +516,7 @@ class GridController {
         e.preventDefault();
         const cellIndex = parseInt(e.target.getAttribute("data-cell-index"));
         if (cellIndex !== null && !isNaN(cellIndex)) {
-          // Simulate touch data for mouse
-          this.activeTouches.set("mouse", {
-            cell: e.target,
-            index: cellIndex,
-            startTime: Date.now(),
-          });
-
-          const currentCount = this.cellTouchCounts.get(cellIndex) || 0;
-          this.cellTouchCounts.set(cellIndex, currentCount + 1);
-
-          // Always activate visual feedback
-          this.feedbackHandler.activateCell(e.target);
-
-          // Only send keyboard event if this is the first touch on this cell
-          if (currentCount === 0) {
-            const key = this.mapCellToKey(e.target);
-            const deviceName = this.getDeviceNameForCell(e.target);
-
-            // Track this key as pressed
-            this.pressedKeys.set(key, {
-              startTime: Date.now(),
-              cellIndex: cellIndex
-            });
-
-            this.webSocketHandler.sendKeyboardEvent(key, true, deviceName);
-
-            e.target.dispatchEvent(
-              new CustomEvent("cellpress", {
-                detail: { index: cellIndex, cell: e.target, key },
-                bubbles: true,
-              }),
-            );
-          }
+          this.activateCellWithOverlap(e.target, e.clientX, e.clientY, "mouse");
 
           this.updateTouchCounter();
         }
@@ -547,7 +531,6 @@ class GridController {
       }
     });
 
-    // Handle touch start events globally to ensure proper multitouch support
     document.addEventListener(
       "touchstart",
       (e) => {
@@ -559,7 +542,9 @@ class GridController {
         Array.from(e.changedTouches).forEach((touch) => {
           // Skip if we're already tracking this touch (shouldn't happen but safety check)
           if (this.activeTouches.has(touch.identifier)) {
-            console.warn(`👆 Duplicate touch start for ID ${touch.identifier}, ignoring`);
+            console.warn(
+              `👆 Duplicate touch start for ID ${touch.identifier}, ignoring`,
+            );
             return;
           }
 
@@ -583,51 +568,13 @@ class GridController {
             );
             console.log("👆 Touch on grid cell, index:", cellIndex);
             if (cellIndex !== null && !isNaN(cellIndex)) {
-              // Track this touch
-              this.activeTouches.set(touch.identifier, {
-                cell: elementUnderTouch,
-                index: cellIndex,
-                startTime: Date.now(),
-              });
-
-              // Increment touch count for this cell (for keyboard events)
-              const currentCount = this.cellTouchCounts.get(cellIndex) || 0;
-              this.cellTouchCounts.set(cellIndex, currentCount + 1);
-
-              // Add this touch to visual tracking for this cell
-              const visualTouches = this.cellVisualTouches.get(cellIndex);
-              visualTouches.add(touch.identifier);
-
-              // Always activate visual feedback for any touch
-              this.feedbackHandler.activateCell(elementUnderTouch);
-
-              // Only send keyboard press event if this is the first touch on this cell
-              // Check if the old count was 0 (meaning this is the first touch)
-              if (currentCount === 0) {
-                console.log("👆 First touch on cell, sending keyboard event");
-                const key = this.mapCellToKey(elementUnderTouch);
-                const deviceName = this.getDeviceNameForCell(elementUnderTouch);
-
-                // Double-check we're not already tracking this key as pressed
-                if (!this.pressedKeys.has(key)) {
-                  // Track this key as pressed
-                  this.pressedKeys.set(key, {
-                    startTime: Date.now(),
-                    cellIndex: cellIndex
-                  });
-
-                  this.sendDebouncedKeyboardEvent(key, true, deviceName);
-
-                  elementUnderTouch.dispatchEvent(
-                    new CustomEvent("cellpress", {
-                      detail: { index: cellIndex, cell: elementUnderTouch, key },
-                      bubbles: true,
-                    }),
-                  );
-                } else {
-                  console.warn(`👆 Key ${key} already pressed, not sending duplicate press event`);
-                }
-              }
+              // Use new overlap activation method
+              this.activateCellWithOverlap(
+                elementUnderTouch,
+                touch.clientX,
+                touch.clientY,
+                touch.identifier,
+              );
 
               this.updateTouchCounter();
             }
@@ -703,13 +650,10 @@ class GridController {
       if (newCount === 0) {
         console.log("🔴 Last keyboard touch on cell, sending keyboard release");
 
-        // Send keyboard release event
         const key = this.mapCellToKey(touchData.cell);
         const deviceName = this.getDeviceNameForCell(touchData.cell);
 
-        // Validate that this key is actually pressed before releasing
         if (this.pressedKeys.has(key)) {
-          // Remove from pressed keys tracking
           this.pressedKeys.delete(key);
 
           this.sendDebouncedKeyboardEvent(key, false, deviceName);
@@ -726,7 +670,9 @@ class GridController {
             }),
           );
         } else {
-          console.warn(`🚨 Attempted to release key ${key} that wasn't tracked as pressed`);
+          console.warn(
+            `🚨 Attempted to release key ${key} that wasn't tracked as pressed`,
+          );
         }
       } else {
         console.log(
@@ -736,7 +682,23 @@ class GridController {
         );
       }
 
-      // Always remove the touch from active touches
+      // Clean up any overlap activations for this touch
+      if (this.overlapActivations.has(touch.identifier)) {
+        const overlapCellIndices = this.overlapActivations.get(
+          touch.identifier,
+        );
+        console.log(
+          `🔴 Cleaning up ${overlapCellIndices.length} overlap activations for touch ${touch.identifier}`,
+        );
+
+        overlapCellIndices.forEach((cellIndex) => {
+          const overlapTouchId = `${touch.identifier}_overlap_${cellIndex}`;
+          this.deactivateCell(cellIndex, overlapTouchId);
+        });
+
+        this.overlapActivations.delete(touch.identifier);
+      }
+
       this.activeTouches.delete(touch.identifier);
     } else {
       console.log(
@@ -744,8 +706,6 @@ class GridController {
         touch.identifier,
       );
 
-      // Emergency cleanup: if we somehow lost track of a touch, 
-      // try to find any orphaned key presses and clean them up
       this.validateAndCleanupState();
     }
   }
@@ -773,6 +733,251 @@ class GridController {
         bubbles: true,
       }),
     );
+  }
+
+  // Detect if touch is near edge of cell and find adjacent cells
+  detectEdgeOverlap(cell, touchX, touchY) {
+    if (!this.cellOverlapEnabled) {
+      return [];
+    }
+
+    const rect = cell.getBoundingClientRect();
+    const relativeX = touchX - rect.left;
+    const relativeY = touchY - rect.top;
+
+    const threshold = this.edgeOverlapThreshold;
+    const adjacentCells = [];
+
+    // near edges? overlap!
+    const nearLeftEdge = relativeX <= threshold;
+    const nearRightEdge = relativeX >= rect.width - threshold;
+    const nearTopEdge = relativeY <= threshold;
+    const nearBottomEdge = relativeY >= rect.height - threshold;
+
+    const currentIndex = parseInt(cell.getAttribute("data-cell-index"));
+    const section = cell.closest("[data-cell-section]");
+    const sectionName = section
+      ? section.getAttribute("data-cell-section")
+      : "unknown";
+    const isHorizontalLayout =
+      section && section.classList.contains("horizontal");
+
+    console.log(
+      `🔀 Overlap check: cell ${currentIndex} in ${sectionName} (${isHorizontalLayout ? "vertical" : "horizontal"} layout)`,
+    );
+    console.log(
+      `🔀 Touch at (${relativeX.toFixed(1)}, ${relativeY.toFixed(1)}) in ${rect.width.toFixed(1)}x${rect.height.toFixed(1)} cell, threshold: ${threshold}px`,
+    );
+    console.log(
+      `🔀 Edges: left=${nearLeftEdge}, right=${nearRightEdge}, top=${nearTopEdge}, bottom=${nearBottomEdge}`,
+    );
+
+    if (!nearLeftEdge && !nearRightEdge && !nearTopEdge && !nearBottomEdge) {
+      console.log(`🔀 Not near any edge, no overlap`);
+      return []; // this is all just debug prints i think we can get rid of those? idk
+    }
+
+    // Get cells in the same section only
+    const sectionCells = section
+      ? Array.from(section.querySelectorAll(".grid-cell"))
+      : [];
+    const sectionIndices = sectionCells.map((c) =>
+      parseInt(c.getAttribute("data-cell-index")),
+    );
+    const currentSectionPosition = sectionIndices.indexOf(currentIndex);
+
+    if (currentSectionPosition === -1) return [];
+
+    if (isHorizontalLayout) {
+      if (nearTopEdge && currentSectionPosition > 0) {
+        const adjacentIndex = sectionIndices[currentSectionPosition - 1];
+        const adjacentCell = this.getCell(adjacentIndex);
+        if (adjacentCell) adjacentCells.push(adjacentCell);
+      }
+
+      if (
+        nearBottomEdge &&
+        currentSectionPosition < sectionIndices.length - 1
+      ) {
+        const adjacentIndex = sectionIndices[currentSectionPosition + 1];
+        const adjacentCell = this.getCell(adjacentIndex);
+        if (adjacentCell) adjacentCells.push(adjacentCell);
+      }
+    } else {
+      if (nearLeftEdge && currentSectionPosition > 0) {
+        const adjacentIndex = sectionIndices[currentSectionPosition - 1];
+        const adjacentCell = this.getCell(adjacentIndex);
+        if (adjacentCell) adjacentCells.push(adjacentCell);
+      }
+
+      if (nearRightEdge && currentSectionPosition < sectionIndices.length - 1) {
+        const adjacentIndex = sectionIndices[currentSectionPosition + 1];
+        const adjacentCell = this.getCell(adjacentIndex);
+        if (adjacentCell) adjacentCells.push(adjacentCell);
+      }
+    }
+
+    return adjacentCells;
+  }
+
+  getLayoutInfo() {
+    if (!this.cells || this.cells.length === 0) {
+      return { type: "unknown", cellsPerRow: 1 };
+    }
+
+    const firstCell = this.cells[0];
+    const section = firstCell.closest("[data-cell-section]");
+    const isHorizontalLayout =
+      section && section.classList.contains("horizontal");
+
+    if (isHorizontalLayout) {
+      return { type: "vertical", cellsPerRow: 1 };
+    } else {
+      return { type: "horizontal", cellsPerRow: this.cells.length };
+    }
+  }
+
+  activateCellWithOverlap(primaryCell, touchX, touchY, touchId) {
+    const primaryIndex = parseInt(primaryCell.getAttribute("data-cell-index"));
+
+    this.activeTouches.set(touchId, {
+      cell: primaryCell,
+      index: primaryIndex,
+      startTime: Date.now(),
+    });
+
+    this.activateCell(primaryCell, primaryIndex, touchId, false);
+
+    const adjacentCells = this.detectEdgeOverlap(primaryCell, touchX, touchY);
+
+    if (adjacentCells.length > 0) {
+      const section = primaryCell.closest("[data-cell-section]");
+      const sectionName = section
+        ? section.getAttribute("data-cell-section")
+        : "unknown";
+      const isHorizontalLayout =
+        section && section.classList.contains("horizontal");
+      const layoutType = isHorizontalLayout ? "vertical" : "horizontal";
+      console.log(
+        `🔀 Edge touch detected in ${sectionName} (${layoutType} layout), activating ${adjacentCells.length} adjacent cells`,
+      );
+
+      this.overlapActivations.set(
+        touchId,
+        adjacentCells.map((cell) =>
+          parseInt(cell.getAttribute("data-cell-index")),
+        ),
+      );
+
+      adjacentCells.forEach((cell) => {
+        const adjIndex = parseInt(cell.getAttribute("data-cell-index"));
+        console.log(`🔀 Activating adjacent cell ${adjIndex} due to overlap`);
+        this.activateCell(
+          cell,
+          adjIndex,
+          `${touchId}_overlap_${adjIndex}`,
+          true,
+        );
+      });
+    } else {
+      console.log(`🔀 No edge overlap detected for cell ${primaryIndex}`);
+    }
+  }
+
+  activateCell(cell, cellIndex, touchId, isOverlap = false) {
+    const currentCount = this.cellTouchCounts.get(cellIndex) || 0;
+    this.cellTouchCounts.set(cellIndex, currentCount + 1);
+
+    const visualTouches = this.cellVisualTouches.get(cellIndex);
+    if (visualTouches) {
+      visualTouches.add(touchId);
+    }
+
+    this.feedbackHandler.activateCell(cell);
+
+    // Only send keyboard press event if this is the first touch on this cell
+    if (currentCount === 0) {
+      const touchType = isOverlap ? "overlap" : "direct";
+      console.log(
+        `👆 First ${touchType} touch on cell ${cellIndex}, sending keyboard event`,
+      );
+
+      const key = this.mapCellToKey(cell);
+      const deviceName = this.getDeviceNameForCell(cell);
+
+      if (!this.pressedKeys.has(key)) {
+        // Track this key as pressed
+        this.pressedKeys.set(key, {
+          startTime: Date.now(),
+          cellIndex: cellIndex,
+        });
+
+        this.sendDebouncedKeyboardEvent(key, true, deviceName);
+
+        cell.dispatchEvent(
+          new CustomEvent("cellpress", {
+            detail: {
+              index: cellIndex,
+              cell: cell,
+              key: key,
+              isOverlap: isOverlap,
+            },
+            bubbles: true,
+          }),
+        );
+      } else {
+        console.warn(
+          `👆 Key ${key} already pressed, not sending duplicate press event`,
+        );
+      }
+    }
+  }
+
+  deactivateCell(cellIndex, touchId) {
+    const cell = this.getCell(cellIndex);
+    if (!cell) return;
+
+    const visualTouches = this.cellVisualTouches.get(cellIndex);
+    if (visualTouches) {
+      visualTouches.delete(touchId);
+
+      if (visualTouches.size === 0) {
+        console.log(
+          `🔴 Last visual touch on overlap cell ${cellIndex}, deactivating visual feedback`,
+        );
+        this.feedbackHandler.deactivateCell(cell);
+      }
+    }
+    const currentCount = this.cellTouchCounts.get(cellIndex) || 1;
+    const newCount = Math.max(0, currentCount - 1);
+    this.cellTouchCounts.set(cellIndex, newCount);
+
+    if (newCount === 0) {
+      console.log(
+        `🔴 Last keyboard touch on overlap cell ${cellIndex}, sending keyboard release`,
+      );
+
+      const key = this.mapCellToKey(cell);
+      const deviceName = this.getDeviceNameForCell(cell);
+
+      if (this.pressedKeys.has(key)) {
+        this.pressedKeys.delete(key);
+
+        this.sendDebouncedKeyboardEvent(key, false, deviceName);
+
+        cell.dispatchEvent(
+          new CustomEvent("cellrelease", {
+            detail: {
+              index: cellIndex,
+              cell: cell,
+              key: key,
+              reason: "overlap_cleanup",
+            },
+            bubbles: true,
+          }),
+        );
+      }
+    }
   }
 
   // Map cell to keyboard key using data-key attribute
@@ -817,11 +1022,13 @@ class GridController {
     return {
       activeTouches: this.activeTouches.size,
       pressedKeys: this.pressedKeys.size,
-      pressedKeyDetails: Array.from(this.pressedKeys.entries()).map(([key, info]) => ({
-        key: key,
-        duration: now - info.startTime,
-        cellIndex: info.cellIndex
-      })),
+      pressedKeyDetails: Array.from(this.pressedKeys.entries()).map(
+        ([key, info]) => ({
+          key: key,
+          duration: now - info.startTime,
+          cellIndex: info.cellIndex,
+        }),
+      ),
       touchData: Array.from(this.activeTouches.entries()).map(([id, data]) => ({
         touchId: id,
         cellIndex: data.index,
@@ -899,102 +1106,33 @@ class GridController {
             newCellIndex,
           );
 
-          // Remove this touch from old cell's visual tracking
-          const oldVisualTouches = this.cellVisualTouches.get(oldCellIndex);
-          if (oldVisualTouches) {
-            oldVisualTouches.delete(touch.identifier);
-            // Only deactivate visual feedback if no visual touches remain on old cell
-            if (oldVisualTouches.size === 0) {
-              this.feedbackHandler.deactivateCell(touchData.cell);
-            }
+          if (this.overlapActivations.has(touch.identifier)) {
+            const oldOverlapCellIndices = this.overlapActivations.get(
+              touch.identifier,
+            );
+            oldOverlapCellIndices.forEach((cellIndex) => {
+              const overlapTouchId = `${touch.identifier}_overlap_${cellIndex}`;
+              this.deactivateCell(cellIndex, overlapTouchId);
+            });
+            this.overlapActivations.delete(touch.identifier);
           }
 
-          // Decrement keyboard touch count for old cell
-          const oldCount = this.cellTouchCounts.get(oldCellIndex) || 1;
-          const newOldCount = Math.max(0, oldCount - 1);
-          this.cellTouchCounts.set(oldCellIndex, newOldCount);
+          this.deactivateCell(oldCellIndex, touch.identifier);
 
-          // Only send keyboard release if this was the last keyboard touch on old cell
-          if (newOldCount === 0) {
-            const oldKey = this.mapCellToKey(touchData.cell);
-            const oldDeviceName = this.getDeviceNameForCell(touchData.cell);
-
-            // Only release if we're actually tracking this key as pressed
-            if (this.pressedKeys.has(oldKey)) {
-              // Remove from pressed keys tracking
-              this.pressedKeys.delete(oldKey);
-
-              this.sendDebouncedKeyboardEvent(
-                oldKey,
-                false,
-                oldDeviceName,
-              );
-
-              touchData.cell.dispatchEvent(
-                new CustomEvent("cellrelease", {
-                  detail: {
-                    index: touchData.index,
-                    cell: touchData.cell,
-                    key: oldKey,
-                    reason: "slid_away",
-                  },
-                  bubbles: true,
-                }),
-              );
-            } else {
-              console.warn(`🔄 Attempted to release key ${oldKey} during slide, but it wasn't tracked as pressed`);
-            }
-          }
-
-          // Add this touch to new cell's visual tracking
-          const newVisualTouches = this.cellVisualTouches.get(newCellIndex);
-          if (newVisualTouches) {
-            newVisualTouches.add(touch.identifier);
-          }
-
-          // Increment keyboard touch count for new cell
-          const newCount = this.cellTouchCounts.get(newCellIndex) || 0;
-          this.cellTouchCounts.set(newCellIndex, newCount + 1);
-
-          // Update touch data
           this.activeTouches.set(touch.identifier, {
             cell: elementUnderTouch,
             index: newCellIndex,
             startTime: touchData.startTime,
           });
 
-          // Always activate visual feedback for the new cell
-          this.feedbackHandler.activateCell(elementUnderTouch);
-
-          // Only send keyboard event if this is the first keyboard touch on the new cell
-          // Check if the old count was 0 (meaning this is the first touch)
-          if (newCount === 0) {
-            const key = this.mapCellToKey(elementUnderTouch);
-            const deviceName = this.getDeviceNameForCell(elementUnderTouch);
-
-            // Double-check we're not already tracking this key as pressed
-            if (!this.pressedKeys.has(key)) {
-              // Track this key as pressed
-              this.pressedKeys.set(key, {
-                startTime: Date.now(),
-                cellIndex: newCellIndex
-              });
-
-              this.sendDebouncedKeyboardEvent(key, true, deviceName);
-
-              elementUnderTouch.dispatchEvent(
-                new CustomEvent("cellpress", {
-                  detail: { index: newCellIndex, cell: elementUnderTouch, key },
-                  bubbles: true,
-                }),
-              );
-            } else {
-              console.warn(`🔄 Key ${key} already pressed during slide, not sending duplicate press event`);
-            }
-          }
+          this.activateCellWithOverlap(
+            elementUnderTouch,
+            touch.clientX,
+            touch.clientY,
+            touch.identifier,
+          );
         }
       } else {
-        // Moved outside the grid - treat as touch end
         this.handleTouchEnd(touch, "moved_outside");
       }
     });
@@ -1012,9 +1150,20 @@ class GridController {
     this.feedbackHandler = handler;
   }
 
+  setCellOverlapEnabled(enabled) {
+    this.cellOverlapEnabled = enabled;
+    console.log(`🔀 Cell overlap ${enabled ? "enabled" : "disabled"}`);
+  }
+
+  setEdgeOverlapThreshold(pixels) {
+    this.edgeOverlapThreshold = Math.max(1, pixels);
+    console.log(
+      `🔀 Edge overlap threshold set to ${this.edgeOverlapThreshold}px`,
+    );
+  }
+
   // Cleanup method to stop intervals and release resources
   destroy() {
-    // No cleanup interval to stop anymore since we disabled stuck key cleanup
     // if (this.cleanupInterval) {
     //   clearInterval(this.cleanupInterval);
     //   this.cleanupInterval = null;
@@ -1034,8 +1183,14 @@ class GridController {
     let releasedCount = 0;
 
     this.pressedKeys.forEach((pressInfo, key) => {
-      console.log(`🔥 Force releasing potentially stuck key: ${key} (pressed for ${now - pressInfo.startTime}ms)`);
-      this.forceReleaseKey(key, pressInfo.cellIndex, "manual_stuck_key_release");
+      console.log(
+        `🔥 Force releasing potentially stuck key: ${key} (pressed for ${now - pressInfo.startTime}ms)`,
+      );
+      this.forceReleaseKey(
+        key,
+        pressInfo.cellIndex,
+        "manual_stuck_key_release",
+      );
       releasedCount++;
     });
 
@@ -1047,7 +1202,6 @@ class GridController {
 document.addEventListener("DOMContentLoaded", () => {
   window.gridController = new GridController();
 
-  // Expose debug methods globally for console access
   window.debugTouch = () => {
     console.log("Touch Debug Info:", window.gridController.getTouchDebugInfo());
   };
@@ -1056,17 +1210,14 @@ document.addEventListener("DOMContentLoaded", () => {
     window.gridController.resetTouchState();
   };
 
-  // New method to release stuck keys
   window.releaseStuckKeys = () => {
     return window.gridController.releaseAllStuckKeys();
   };
 
-  // New method to validate state
   window.validateState = () => {
     return window.gridController.validateAndCleanupState();
   };
 
-  // Method to get detailed state for debugging
   window.getDetailedState = () => {
     const grid = window.gridController;
     return {
@@ -1077,7 +1228,6 @@ document.addEventListener("DOMContentLoaded", () => {
     };
   };
 
-  // Test function to manually activate a cell
   window.testCell = (key) => {
     const cell = document.querySelector(`[data-key="${key}"]`);
     if (cell) {
@@ -1092,8 +1242,30 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  console.log("🎮 Backflow loaded with improved multitouch support and stuck key detection");
-  console.log("🔧 Debug commands: debugTouch(), resetTouch(), releaseStuckKeys(), validateState(), getDetailedState(), testCell('q')");
+  window.setCellOverlap = (enabled) => {
+    window.gridController.setCellOverlapEnabled(enabled);
+  };
+
+  window.setOverlapThreshold = (pixels) => {
+    window.gridController.setEdgeOverlapThreshold(pixels);
+  };
+
+  window.getOverlapSettings = () => {
+    const grid = window.gridController;
+    return {
+      enabled: grid.cellOverlapEnabled,
+      threshold: grid.edgeOverlapThreshold,
+      activeOverlaps: Array.from(grid.overlapActivations.entries()),
+    };
+  };
+
+  console.log("backflow loaded");
+  console.log(
+    "🔧 debug commands: debugTouch(), resetTouch(), releaseStuckKeys(), validateState(), getDetailedState(), testCell('q')",
+  );
+  console.log(
+    "🔀 overlap commands: setCellOverlap(true/false), setOverlapThreshold(pixels), getOverlapSettings()",
+  );
 });
 
 document.addEventListener("cellpress", (e) => {
