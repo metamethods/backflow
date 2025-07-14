@@ -2,6 +2,7 @@
 
 // todo: finish this file
 
+use crate::device_filter::KeyExpr;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -178,13 +179,35 @@ pub struct DeviceConfig {
     pub map_backend: String,
     /// The type of device this represents (e.g., "keyboard", "mouse", "gamepad")
     pub device_type: String,
-    /// Key remapping from custom keys to evdev codes
-    #[serde(default)]
-    pub remap: HashMap<String, String>,
+    /// Key remapping from custom keys to evdev codes or expressions
+    #[serde(default, with = "keyexpr_remap_serde")]
+    pub remap: HashMap<String, KeyExpr>,
     /// When true, only keys defined in the remap table are allowed through (whitelist mode)
     /// When false (default), undefined keys pass through unchanged
     #[serde(default)]
     pub remap_whitelist: bool,
+}
+
+mod keyexpr_remap_serde {
+    use super::KeyExpr;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S>(map: &HashMap<String, KeyExpr>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let as_str_map: HashMap<&String, String> = map.iter().map(|(k, v)| (k, format!("{}", v))).collect();
+        as_str_map.serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<String, KeyExpr>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let str_map = HashMap::<String, String>::deserialize(deserializer)?;
+        Ok(str_map.into_iter().map(|(k, v)| (k, KeyExpr::parse(&v))).collect())
+    }
 }
 
 impl Default for DeviceConfig {
@@ -397,15 +420,15 @@ mod tests {
         assert_eq!(device_config.device_type, "keyboard");
         assert_eq!(
             device_config.remap.get("SLIDER_1"),
-            Some(&"KEY_A".to_string())
+            Some(&KeyExpr::Single("KEY_A".to_string()))
         );
         assert_eq!(
             device_config.remap.get("SLIDER_2"),
-            Some(&"KEY_B".to_string())
+            Some(&KeyExpr::Single("KEY_B".to_string()))
         );
         assert_eq!(
             device_config.remap.get("GAME_1"),
-            Some(&"KEY_SPACE".to_string())
+            Some(&KeyExpr::Single("KEY_SPACE".to_string()))
         );
     }
 
@@ -434,7 +457,7 @@ mod tests {
         assert_eq!(gamepad_config.device_type, "gamepad");
         assert_eq!(
             gamepad_config.remap.get("BUTTON_A"),
-            Some(&"BTN_A".to_string())
+            Some(&KeyExpr::Single("BTN_A".to_string()))
         );
     }
 
@@ -475,15 +498,15 @@ mod tests {
         assert_eq!(slider_config.device_type, "keyboard");
         assert_eq!(
             slider_config.remap.get("SLIDER_1"),
-            Some(&"KEY_A".to_string())
+            Some(&KeyExpr::Single("KEY_A".to_string()))
         );
         assert_eq!(
             slider_config.remap.get("SLIDER_2"),
-            Some(&"KEY_S".to_string())
+            Some(&KeyExpr::Single("KEY_S".to_string()))
         );
         assert_eq!(
             slider_config.remap.get("SLIDER_3"),
-            Some(&"KEY_D".to_string())
+            Some(&KeyExpr::Single("KEY_D".to_string()))
         );
         assert!(!slider_config.remap_whitelist); // Should default to false
 
@@ -493,11 +516,11 @@ mod tests {
         assert_eq!(gamepad_config.device_type, "keyboard");
         assert_eq!(
             gamepad_config.remap.get("GAME_1"),
-            Some(&"KEY_SPACE".to_string())
+            Some(&KeyExpr::Single("KEY_SPACE".to_string()))
         );
         assert_eq!(
             gamepad_config.remap.get("BUTTON_A"),
-            Some(&"KEY_Z".to_string())
+            Some(&KeyExpr::Single("KEY_Z".to_string()))
         );
         assert!(!gamepad_config.remap_whitelist); // Should default to false
 
@@ -525,11 +548,11 @@ mod tests {
         assert!(device_config.remap_whitelist);
         assert_eq!(
             device_config.remap.get("SLIDER_1"),
-            Some(&"KEY_A".to_string())
+            Some(&KeyExpr::Single("KEY_A".to_string()))
         );
         assert_eq!(
             device_config.remap.get("GAME_1"),
-            Some(&"KEY_SPACE".to_string())
+            Some(&KeyExpr::Single("KEY_SPACE".to_string()))
         );
     }
 
@@ -567,7 +590,81 @@ mod tests {
         assert!(!device_config.remap_whitelist);
         assert_eq!(
             device_config.remap.get("SLIDER_1"),
-            Some(&"KEY_A".to_string())
+            Some(&KeyExpr::Single("KEY_A".to_string()))
         );
+    }
+
+    #[test]
+    fn test_device_config_with_keyexpr_combo_and_sequence() {
+        let toml_str = r#"
+            [device."advanced_device"]
+            map_backend = "uinput"
+            device_type = "keyboard"
+
+            [device."advanced_device".remap]
+            "SLIDER_1" = "KEY_A+KEY_B"
+            "SLIDER_2" = "KEY_C,KEY_D,KEY_E"
+            "GAME_1" = "KEY_SPACE"
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let device_config = config.device.get("advanced_device").unwrap();
+        assert_eq!(device_config.map_backend, "uinput");
+        assert_eq!(device_config.device_type, "keyboard");
+        
+        // Test combo expression
+        assert_eq!(
+            device_config.remap.get("SLIDER_1"),
+            Some(&KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]))
+        );
+        
+        // Test sequence expression
+        assert_eq!(
+            device_config.remap.get("SLIDER_2"),
+            Some(&KeyExpr::Sequence(vec!["KEY_C".to_string(), "KEY_D".to_string(), "KEY_E".to_string()]))
+        );
+        
+        // Test single expression
+        assert_eq!(
+            device_config.remap.get("GAME_1"),
+            Some(&KeyExpr::Single("KEY_SPACE".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_keyexpr_parsing() {
+        // Test single key
+        let single = KeyExpr::parse("KEY_A");
+        assert_eq!(single, KeyExpr::Single("KEY_A".to_string()));
+        
+        // Test combo
+        let combo = KeyExpr::parse("KEY_A+KEY_B");
+        assert_eq!(combo, KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
+        
+        // Test sequence
+        let sequence = KeyExpr::parse("KEY_A,KEY_B,KEY_C");
+        assert_eq!(sequence, KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+        
+        // Test combo with spaces
+        let combo_spaces = KeyExpr::parse(" KEY_A + KEY_B ");
+        assert_eq!(combo_spaces, KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
+        
+        // Test sequence with spaces
+        let sequence_spaces = KeyExpr::parse(" KEY_A , KEY_B , KEY_C ");
+        assert_eq!(sequence_spaces, KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+    }
+
+    #[test]
+    fn test_keyexpr_to_string() {
+        // Test single key
+        let single = KeyExpr::Single("KEY_A".to_string());
+        assert_eq!(format!("{}", single), "KEY_A");
+        
+        // Test combo
+        let combo = KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]);
+        assert_eq!(format!("{}", combo), "KEY_A+KEY_B");
+        
+        // Test sequence
+        let sequence = KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]);
+        assert_eq!(format!("{}", sequence), "KEY_A,KEY_B,KEY_C");
     }
 }

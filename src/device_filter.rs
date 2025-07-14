@@ -9,7 +9,13 @@ use crate::config::{AppConfig, DeviceConfig};
 use crate::input::{AnalogEvent, InputEvent, InputEventPacket, KeyboardEvent};
 use eyre::Result;
 use std::collections::HashMap;
+use std::fmt;
 use tracing::{debug, trace, warn};
+
+
+// Let's add an expression engine for our keys :3
+
+
 
 /// Device filter that applies per-device transformations and routing
 #[derive(Clone)]
@@ -39,10 +45,10 @@ impl DeviceFilter {
 
             // Transform and filter events based on device configuration
             let mut filtered_events = Vec::new();
-            for mut event in packet.events.into_iter() {
-                if self.transform_and_filter_event(&mut event, config)? {
-                    filtered_events.push(event);
-                }
+            for event in packet.events.into_iter() {
+                // New: expand events if remapped to KeyExpr::Combo/Sequence
+                let expanded = self.expand_event(event, config)?;
+                filtered_events.extend(expanded);
             }
             packet.events = filtered_events;
         } else {
@@ -53,6 +59,53 @@ impl DeviceFilter {
         }
 
         Ok(packet)
+    }
+
+    /// Expand an input event according to remapping rules (support KeyExpr)
+    fn expand_event(&self, event: InputEvent, config: &DeviceConfig) -> Result<Vec<InputEvent>> {
+        match event {
+            InputEvent::Keyboard(mut keyboard_event) => {
+                let key = match &mut keyboard_event {
+                    KeyboardEvent::KeyPress { key } => key,
+                    KeyboardEvent::KeyRelease { key } => key,
+                };
+                if let Some(expr) = config.remap.get(key) {
+                    match expr {
+                        KeyExpr::Single(remap) => {
+                            *key = remap.clone();
+                            Ok(vec![InputEvent::Keyboard(keyboard_event)])
+                        }
+                        KeyExpr::Combo(keys) => {
+                            // For combos, emit multiple KeyPress/KeyRelease events with the same timestamp
+                            let events = keys.iter().map(|k| {
+                                match &keyboard_event {
+                                    KeyboardEvent::KeyPress { .. } => InputEvent::Keyboard(KeyboardEvent::KeyPress { key: k.clone() }),
+                                    KeyboardEvent::KeyRelease { .. } => InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: k.clone() }),
+                                }
+                            }).collect();
+                            Ok(events)
+                        }
+                        KeyExpr::Sequence(keys) => {
+                            // For sequences, emit events in order
+                            let events = keys.iter().map(|k| {
+                                match &keyboard_event {
+                                    KeyboardEvent::KeyPress { .. } => InputEvent::Keyboard(KeyboardEvent::KeyPress { key: k.clone() }),
+                                    KeyboardEvent::KeyRelease { .. } => InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: k.clone() }),
+                                }
+                            }).collect();
+                            Ok(events)
+                        }
+                    }
+                } else if config.remap_whitelist {
+                    // Not in whitelist, filter out
+                    Ok(vec![])
+                } else {
+                    Ok(vec![InputEvent::Keyboard(keyboard_event)])
+                }
+            }
+            // Analog and other events: unchanged for now
+            _ => Ok(vec![event]),
+        }
     }
 
     /// Transform and filter a single input event based on device configuration
@@ -103,10 +156,19 @@ impl DeviceFilter {
         };
 
         // Check if this key needs to be remapped
-        if let Some(remapped_key) = config.remap.get(key) {
-            trace!("Remapping key '{}' to '{}' for device", key, remapped_key);
-            *key = remapped_key.clone();
-            return Ok(true); // Always keep remapped keys
+        if let Some(remapped_expr) = config.remap.get(key) {
+            // For the legacy single-event transform, only handle Single expressions
+            match remapped_expr {
+                KeyExpr::Single(remapped_key) => {
+                    trace!("Remapping key '{}' to '{}' for device", key, remapped_key);
+                    *key = remapped_key.clone();
+                    return Ok(true); // Always keep remapped keys
+                }
+                _ => {
+                    warn!("Complex KeyExpr found in legacy transform method - use expand_event instead");
+                    return Ok(true); // Keep the original key for now
+                }
+            }
         }
 
         // Handle whitelist mode
@@ -134,13 +196,22 @@ impl DeviceFilter {
         config: &DeviceConfig,
     ) -> Result<bool> {
         // Check if this key needs to be remapped
-        if let Some(remapped_key) = config.remap.get(&event.keycode) {
-            trace!(
-                "Remapping analog key '{}' to '{}' for device",
-                event.keycode, remapped_key
-            );
-            event.keycode = remapped_key.clone();
-            return Ok(true); // Always keep remapped keys
+        if let Some(remapped_expr) = config.remap.get(&event.keycode) {
+            // For the legacy single-event transform, only handle Single expressions
+            match remapped_expr {
+                KeyExpr::Single(remapped_key) => {
+                    trace!(
+                        "Remapping analog key '{}' to '{}' for device",
+                        event.keycode, remapped_key
+                    );
+                    event.keycode = remapped_key.clone();
+                    return Ok(true); // Always keep remapped keys
+                }
+                _ => {
+                    warn!("Complex KeyExpr found in legacy transform method - use expand_event instead");
+                    return Ok(true); // Keep the original key for now
+                }
+            }
         }
 
         // Handle whitelist mode
@@ -198,6 +269,38 @@ impl DeviceFilter {
     }
 }
 
+/// Key expression for remapping: can be a single key, a combination (chord), or a sequence
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum KeyExpr {
+    Single(String),
+    Combo(Vec<String>), // e.g., multiple keys pressed together
+    Sequence(Vec<String>), // e.g., keys pressed in order
+}
+
+impl KeyExpr {
+    /// Parse a key expression from a string (simple format: 'KEY_A', 'KEY_A+KEY_B', 'KEY_A,KEY_B')
+    pub fn parse(expr: &str) -> Self {
+        if expr.contains(",") {
+            KeyExpr::Sequence(expr.split(',').map(|s| s.trim().to_string()).collect())
+        } else if expr.contains("+") {
+            KeyExpr::Combo(expr.split('+').map(|s| s.trim().to_string()).collect())
+        } else {
+            KeyExpr::Single(expr.trim().to_string())
+        }
+    }
+
+}
+
+impl fmt::Display for KeyExpr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyExpr::Single(k) => write!(f, "{}", k),
+            KeyExpr::Combo(keys) => write!(f, "{}", keys.join("+")),
+            KeyExpr::Sequence(keys) => write!(f, "{}", keys.join(",")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,9 +313,9 @@ mod tests {
 
         // Create a test device config with remapping
         let mut remap = HashMap::new();
-        remap.insert("SLIDER_1".to_string(), "KEY_A".to_string());
-        remap.insert("SLIDER_2".to_string(), "KEY_B".to_string());
-        remap.insert("GAME_1".to_string(), "KEY_SPACE".to_string());
+        remap.insert("SLIDER_1".to_string(), KeyExpr::Single("KEY_A".to_string()));
+        remap.insert("SLIDER_2".to_string(), KeyExpr::Single("KEY_B".to_string()));
+        remap.insert("GAME_1".to_string(), KeyExpr::Single("KEY_SPACE".to_string()));
 
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
@@ -334,8 +437,8 @@ mod tests {
 
         // Create a test device config with whitelist enabled
         let mut remap = HashMap::new();
-        remap.insert("SLIDER_1".to_string(), "KEY_A".to_string());
-        remap.insert("GAME_1".to_string(), "KEY_SPACE".to_string());
+        remap.insert("SLIDER_1".to_string(), KeyExpr::Single("KEY_A".to_string()));
+        remap.insert("GAME_1".to_string(), KeyExpr::Single("KEY_SPACE".to_string()));
 
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
@@ -434,7 +537,7 @@ mod tests {
 
         // Create a test device config with whitelist disabled (default behavior)
         let mut remap = HashMap::new();
-        remap.insert("SLIDER_1".to_string(), "KEY_A".to_string());
+        remap.insert("SLIDER_1".to_string(), KeyExpr::Single("KEY_A".to_string()));
 
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
@@ -497,5 +600,141 @@ mod tests {
         // Test that remap_whitelist defaults to false
         let default_config = DeviceConfig::default();
         assert!(!default_config.remap_whitelist);
+    }
+
+    #[test]
+    fn test_keyexpr_combo_expansion() {
+        let mut device_configs = HashMap::new();
+
+        // Create a test device config with combo mapping
+        let mut remap = HashMap::new();
+        remap.insert("SLIDER_1".to_string(), KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
+
+        let device_config = DeviceConfig {
+            map_backend: "uinput".to_string(),
+            device_type: "keyboard".to_string(),
+            remap,
+            remap_whitelist: false,
+        };
+
+        device_configs.insert("test_device".to_string(), device_config);
+
+        let config = AppConfig {
+            device: device_configs,
+            ..Default::default()
+        };
+
+        let filter = DeviceFilter::new(&config);
+
+        // Create a test packet with a key that maps to a combo
+        let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "SLIDER_1".to_string(),
+        }));
+
+        let transformed_packet = filter.transform_packet(packet).unwrap();
+
+        // Should have 2 events (one for each key in the combo)
+        assert_eq!(transformed_packet.events.len(), 2);
+
+        // Check that both keys in the combo are present
+        match &transformed_packet.events[0] {
+            InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+                assert_eq!(key, "KEY_A");
+            }
+            _ => panic!("Expected KeyPress event"),
+        }
+
+        match &transformed_packet.events[1] {
+            InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+                assert_eq!(key, "KEY_B");
+            }
+            _ => panic!("Expected KeyPress event"),
+        }
+    }
+
+    #[test]
+    fn test_keyexpr_sequence_expansion() {
+        let mut device_configs = HashMap::new();
+
+        // Create a test device config with sequence mapping
+        let mut remap = HashMap::new();
+        remap.insert("SLIDER_1".to_string(), KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+
+        let device_config = DeviceConfig {
+            map_backend: "uinput".to_string(),
+            device_type: "keyboard".to_string(),
+            remap,
+            remap_whitelist: false,
+        };
+
+        device_configs.insert("test_device".to_string(), device_config);
+
+        let config = AppConfig {
+            device: device_configs,
+            ..Default::default()
+        };
+
+        let filter = DeviceFilter::new(&config);
+
+        // Create a test packet with a key that maps to a sequence
+        let mut packet = InputEventPacket::new("test_device".to_string(), 12345);
+        packet.add_event(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+            key: "SLIDER_1".to_string(),
+        }));
+
+        let transformed_packet = filter.transform_packet(packet).unwrap();
+
+        // Should have 3 events (one for each key in the sequence)
+        assert_eq!(transformed_packet.events.len(), 3);
+
+        // Check that all keys in the sequence are present in order
+        let expected_keys = ["KEY_A", "KEY_B", "KEY_C"];
+        for (i, expected_key) in expected_keys.iter().enumerate() {
+            match &transformed_packet.events[i] {
+                InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) => {
+                    assert_eq!(key, expected_key);
+                }
+                _ => panic!("Expected KeyPress event"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_keyexpr_parsing() {
+        // Test single key
+        let single = KeyExpr::parse("KEY_A");
+        assert_eq!(single, KeyExpr::Single("KEY_A".to_string()));
+
+        // Test combo
+        let combo = KeyExpr::parse("KEY_A+KEY_B");
+        assert_eq!(combo, KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
+
+        // Test sequence
+        let sequence = KeyExpr::parse("KEY_A,KEY_B,KEY_C");
+        assert_eq!(sequence, KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+
+        // Test combo with spaces
+        let combo_spaces = KeyExpr::parse(" KEY_A + KEY_B ");
+        assert_eq!(combo_spaces, KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
+
+        // Test sequence with spaces
+        let sequence_spaces = KeyExpr::parse(" KEY_A , KEY_B , KEY_C ");
+        assert_eq!(sequence_spaces, KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+    }
+
+    #[test]
+    fn test_keyexpr_to_string() {
+        // Test single key
+        let single = KeyExpr::Single("KEY_A".to_string());
+        assert_eq!(format!("{}", single), "KEY_A");
+
+        // Test combo
+        let combo = KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]);
+        assert_eq!(format!("{}", combo), "KEY_A+KEY_B");
+
+        // Test sequence
+        let sequence = KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]);
+        assert_eq!(format!("{}", sequence), "KEY_A,KEY_B,KEY_C");
     }
 }

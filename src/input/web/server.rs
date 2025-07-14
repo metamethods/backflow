@@ -370,6 +370,7 @@ mod tests {
     use crate::feedback::{FeedbackEvent, LedEvent};
     use crate::input::{InputEvent, KeyboardEvent, PointerEvent};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio_tungstenite::connect_async;
 
     /// Creates a sample input event packet for testing.
     fn create_sample_packet() -> InputEventPacket {
@@ -443,6 +444,7 @@ mod tests {
     // }
 
     #[tokio::test]
+    #[tracing_test::traced_test]
     async fn test_unified_websocket_state() {
         let input_stream = InputEventStream::new();
         let feedback_stream = FeedbackEventStream::new();
@@ -501,6 +503,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[tracing_test::traced_test]
     async fn test_api_layouts_endpoint() {
         use std::fs;
 
@@ -574,6 +577,133 @@ mod tests {
         let deserialized: WebTemplateResponse = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.path, "custom/chuni/layout.html");
         assert_eq!(deserialized.name, "chuni");
+    }
+
+    #[tokio::test]
+    #[tracing_test::traced_test]
+    async fn test_websocket_stress_large_batches() {
+        // 1. Setup server
+        info!("Step 1: Setting up server");
+        let input_stream = InputEventStream::new();
+        let feedback_stream = FeedbackEventStream::new();
+        let mut input_receiver = input_stream.subscribe();
+
+        let mut server = WebServer::auto_detect_web_ui(
+            "127.0.0.1:0".parse().unwrap(),
+            input_stream,
+            feedback_stream,
+        );
+        server.web_assets_path = None; // Disable static file serving for this test
+
+        let (router, _ws_state) = server.build_router();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_handle = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+
+        // 2. Connect client
+        info!("Step 2: Connecting WebSocket client");
+        let (ws_stream, _) = connect_async(format!("ws://{}/ws", addr))
+            .await
+            .expect("Failed to connect");
+        let (mut write, _read) = ws_stream.split();
+
+        // 3. Send large batches of events
+        info!("Step 3: Sending large batches of events");
+        const NUM_KEYS: usize = 2500; // Total number of unique keys to press and release
+        let mut key_events = Vec::new();
+
+        // Generate all key press and release events up front
+        for i in 0..NUM_KEYS {
+            let key = format!("STRESS_KEY_{}", i);
+            key_events.push(InputEvent::Keyboard(KeyboardEvent::KeyPress {
+                key: key.clone(),
+            }));
+            key_events.push(InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }));
+        }
+
+        // Send all events in chunks (packets)
+        let mut total_events_sent = 0;
+        for (idx, chunk) in key_events.chunks(50).enumerate() {
+            let packet = InputEventPacket {
+                device_id: "stress_test_device".to_string(),
+                timestamp: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                events: chunk.to_vec(),
+            };
+
+            let json = serde_json::to_string(&packet).unwrap();
+            write
+                .send(tokio_tungstenite::tungstenite::Message::Text(json.into()))
+                .await
+                .expect("Failed to send message");
+            total_events_sent += chunk.len();
+            debug!(
+                "Sent packet {} ({} events, total sent: {})",
+                idx,
+                chunk.len(),
+                total_events_sent
+            );
+        }
+
+        // 4. Verify all packets were received and final state is correct
+        info!("Step 4: Verifying all packets were received");
+        let mut total_events_received = 0;
+        let timeout_duration = std::time::Duration::from_secs(5);
+        let mut all_received_events = Vec::new();
+
+        let receive_future = async {
+            while let Some(mut packet) = input_receiver.receive().await {
+                total_events_received += packet.events.len();
+                all_received_events.append(&mut packet.events);
+                debug!(
+                    "Received packet: {} events (total received: {})",
+                    packet.events.len(),
+                    total_events_received
+                );
+                if total_events_received >= total_events_sent {
+                    break;
+                }
+            }
+        };
+
+        tokio::time::timeout(timeout_duration, receive_future)
+            .await
+            .expect("Test timed out waiting for events");
+
+        assert_eq!(
+            total_events_received, total_events_sent,
+            "Mismatch between sent and received events"
+        );
+
+        // 5. Check final input state: all keys should be released
+        info!("Step 5: Checking final input state (all keys released)");
+        let mut pressed_keys = std::collections::HashSet::new();
+        for event in all_received_events {
+            if let InputEvent::Keyboard(KeyboardEvent::KeyPress { key }) = event {
+                pressed_keys.insert(key);
+            } else if let InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) = event {
+                pressed_keys.remove(&key);
+            }
+        }
+        assert!(
+            pressed_keys.is_empty(),
+            "Some keys are still pressed at the end: {:?}",
+            pressed_keys
+        );
+
+        // 6. Cleanup
+        info!("Step 6: Cleaning up");
+        server_handle.abort();
     }
 }
 
