@@ -157,7 +157,6 @@ fn apply_brokenithm_state_to_chuniio(
     *last_coin_pulse = brokenithm_state.coin_pulse;
 }
 
-// ...existing code...
 /// Chuniio proxy server that handles bidirectional communication
 pub struct ChuniioProxyServer {
     socket_path: PathBuf,
@@ -882,12 +881,10 @@ impl InternalChuniioProxyServer {
                 // Send slider touch events for changed regions
                 for (region, &pressure_value) in pressure.iter().enumerate() {
                     if pressure_value > 0 {
-                        if let Err(e) = input_tx
-                            .send(ChuniInputEvent::SliderTouch {
-                                region: region as u8,
-                                pressure: pressure_value,
-                            })
-                        {
+                        if let Err(e) = input_tx.send(ChuniInputEvent::SliderTouch {
+                            region: region as u8,
+                            pressure: pressure_value,
+                        }) {
                             warn!("Failed to send slider touch event: {}", e);
                         }
                     }
@@ -995,8 +992,7 @@ impl InternalChuniioProxyServer {
         &self,
         event: ChuniFeedbackEvent,
     ) -> Result<(), mpsc::error::SendError<ChuniFeedbackEvent>> {
-        self.feedback_tx
-            .send(event)
+        self.feedback_tx.send(event)
     }
 
     /// Send input event (for external use)
@@ -1009,8 +1005,7 @@ impl InternalChuniioProxyServer {
         state.process_input_event(event.clone());
 
         // Forward to input handler
-        self.input_tx
-            .send(event)
+        self.input_tx.send(event)
     }
 }
 

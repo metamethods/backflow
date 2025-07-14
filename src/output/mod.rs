@@ -52,13 +52,9 @@ pub fn rgb_to_brg(rgb: &[u8; 3]) -> [u8; 3] {
     [rgb[2], rgb[0], rgb[1]]
 }
 mod tests {
-    use super::*;
-    use crate::CHANNEL_BUFFER_SIZE;
     use crate::feedback::FeedbackEventStream;
     use crate::feedback::generators::chuni_jvs::ChuniLedDataPacket;
-    use crate::input::{
-        InputEvent, InputEventPacket, InputEventReceiver, InputEventStream, KeyboardEvent,
-    };
+    use crate::input::{InputEvent, InputEventPacket, InputEventStream, KeyboardEvent};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
@@ -73,8 +69,7 @@ mod tests {
         // Create streams
         let input_stream = InputEventStream::new();
         let feedback_stream = FeedbackEventStream::new();
-        let (led_packet_tx, _led_packet_rx) =
-            mpsc::unbounded_channel::<ChuniLedDataPacket>(); // Create a shared counter to track processed events
+        let (led_packet_tx, _led_packet_rx) = mpsc::unbounded_channel::<ChuniLedDataPacket>(); // Create a shared counter to track processed events
         let processed_events = Arc::new(Mutex::new(HashMap::<String, u32>::new()));
 
         // Create receivers before starting the backends to ensure they exist when we send events
