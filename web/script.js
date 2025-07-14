@@ -187,6 +187,7 @@ class GridController {
     this.compiledCells = [];
     this.keyStates = [];
     this.lastKeyStates = [];
+    this.pendingKeyStates = [];
 
     this.overlapThreshold = 15;
     this.touchCounter = null;
@@ -213,6 +214,7 @@ class GridController {
     this.compiledCells = [];
     this.keyStates = [];
     this.lastKeyStates = [];
+    this.pendingKeyStates = [];
 
     for (let i = 0; i < this.cells.length; i++) {
       const cell = this.cells[i];
@@ -244,6 +246,7 @@ class GridController {
       this.compiledCells.push(compiled);
       this.keyStates.push(0);
       this.lastKeyStates.push(0);
+      this.pendingKeyStates.push(0);
     }
 
     this.webSocketHandler.lastKeyStates = [...this.lastKeyStates];
@@ -311,8 +314,9 @@ class GridController {
         }
       }
 
-      if (JSON.stringify(newKeyStates) !== JSON.stringify(this.lastKeyStates)) {
+      if (JSON.stringify(newKeyStates) !== JSON.stringify(this.pendingKeyStates)) {
         this.throttledSendKeys(newKeyStates);
+        this.pendingKeyStates = [...newKeyStates];
       }
 
       this.keyStates = newKeyStates;
@@ -424,6 +428,7 @@ class GridController {
   resetAll() {
     this.keyStates.fill(0);
     this.lastKeyStates.fill(0);
+    this.pendingKeyStates.fill(0);
     this.webSocketHandler.lastKeyStates = [];
 
     this.cells.forEach((cell) => {
