@@ -182,15 +182,17 @@ impl FeedbackEventPacket {
 #[derive(Clone)]
 pub struct FeedbackEventStream {
     /// Sender for feedback event packets.
-    pub tx: tokio::sync::mpsc::Sender<FeedbackEventPacket>,
+    pub tx: tokio::sync::mpsc::UnboundedSender<FeedbackEventPacket>,
     /// Receiver for feedback event packets.
-    pub rx: std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<FeedbackEventPacket>>>,
+    pub rx: std::sync::Arc<
+        tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<FeedbackEventPacket>>,
+    >,
 }
 
 impl FeedbackEventStream {
     /// Creates a new `FeedbackEventStream` with a tokio mpsc channel.
     pub fn new() -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(500); // Larger buffer for high-frequency feedback
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel(); // Unbounded for high-frequency feedback
         Self {
             tx,
             rx: std::sync::Arc::new(tokio::sync::Mutex::new(rx)),
@@ -198,19 +200,20 @@ impl FeedbackEventStream {
     }
 
     /// Sends a feedback event packet through the stream.
-    pub async fn send(
+    pub fn send(
         &self,
         packet: FeedbackEventPacket,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<FeedbackEventPacket>> {
-        self.tx.send(packet).await
+        self.tx.send(packet)
     }
 
     /// Tries to send a feedback event packet through the stream without blocking.
+    /// For unbounded channels, this is equivalent to send()
     pub fn try_send(
         &self,
         packet: FeedbackEventPacket,
-    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<FeedbackEventPacket>> {
-        self.tx.try_send(packet)
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<FeedbackEventPacket>> {
+        self.tx.send(packet)
     }
 
     /// Receives a feedback event packet from the stream.
@@ -299,7 +302,7 @@ mod tests {
             rgb: Some((255, 0, 0)),
         }));
 
-        stream.send(packet.clone()).await.unwrap();
+        stream.send(packet.clone()).unwrap();
         let received = stream.receive().await.unwrap();
         assert_eq!(received.device_id, "dev");
         assert_eq!(received.events.len(), 1);

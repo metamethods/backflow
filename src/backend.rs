@@ -239,20 +239,30 @@ impl Backend {
     /// Start output services based on configuration
     async fn start_output_services(
         &mut self,
-        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>, // switched to bounded Sender
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>, // switched to unbounded Sender
     ) -> Result<()> {
         if self.config.output.uinput.enabled {
             tracing::info!("Starting uinput output backend");
 
             let input_stream = self.streams.transformed_input.clone();
             let handle = tokio::spawn(async move {
-                let mut output = OutputBackendType::Udev(
-                    crate::output::udev::UdevOutput::new(input_stream)
-                        .expect("Failed to create UdevOutput"),
-                );
-
-                if let Err(e) = output.run().await {
-                    tracing::error!("Output backend error: {}", e);
+                let output_result = crate::output::udev::UdevOutput::new(input_stream);
+                match output_result {
+                    Ok(udev_output) => {
+                        let mut output = OutputBackendType::Udev(udev_output);
+                        if let Err(e) = output.run().await {
+                            tracing::error!("Udev output backend runtime error: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to create UdevOutput: {}. This is usually due to missing /dev/uinput device, insufficient permissions, or uinput kernel module not loaded. Try: sudo modprobe uinput && sudo chmod 666 /dev/uinput",
+                            e
+                        );
+                        tracing::warn!(
+                            "Udev output backend disabled due to initialization failure"
+                        );
+                    }
                 }
             });
 
@@ -300,7 +310,7 @@ impl Backend {
     /// Start feedback services based on configuration
     async fn start_feedback_services(
         &mut self,
-        led_packet_rx: mpsc::Receiver<ChuniLedDataPacket>, // switched to bounded Receiver
+        led_packet_rx: mpsc::UnboundedReceiver<ChuniLedDataPacket>, // switched to unbounded Receiver
     ) -> Result<()> {
         // Check if chuniio_proxy is enabled
         let chuniio_proxy_enabled = self

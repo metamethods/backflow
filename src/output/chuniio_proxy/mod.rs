@@ -83,7 +83,6 @@
 //!
 //! All multi-byte integers are transmitted in little-endian format.
 
-use crate::CHANNEL_BUFFER_SIZE;
 use crate::feedback::FeedbackEventStream;
 use crate::feedback::generators::chuni_jvs::{ChuniLedDataPacket, LedBoardData, Rgb};
 use crate::input::brokenithm::{BrokenithmInputState, get_brokenithm_state};
@@ -166,7 +165,7 @@ pub struct ChuniioProxyServer {
     next_client_id: Arc<RwLock<u64>>,
     input_receiver: InputEventReceiver,
     feedback_stream: FeedbackEventStream,
-    led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
+    led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     last_coin_pulse: bool, // Track coin pulse state for edge detection
     last_brokenithm_state: Option<BrokenithmInputState>, // Track last applied Brokenithm state for change detection
 }
@@ -177,7 +176,7 @@ impl ChuniioProxyServer {
         socket_path: Option<PathBuf>,
         input_stream: InputEventStream,
         feedback_stream: FeedbackEventStream,
-        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> Self {
         let socket_path = socket_path.unwrap_or_else(|| {
             // Try to use user runtime directory, fallback to /tmp
@@ -208,9 +207,9 @@ impl OutputBackend for ChuniioProxyServer {
     async fn run(&mut self) -> eyre::Result<()> {
         tracing::info!("Starting chuniio proxy output backend");
 
-        // Create channels for internal communication with larger buffers for better throughput
-        let (input_tx, mut input_rx) = mpsc::channel::<ChuniInputEvent>(1000);
-        let (feedback_tx, mut feedback_rx) = mpsc::channel::<ChuniFeedbackEvent>(1000);
+        // Create channels for internal communication with unbounded capacity for better throughput
+        let (input_tx, mut input_rx) = mpsc::unbounded_channel::<ChuniInputEvent>();
+        let (feedback_tx, mut feedback_rx) = mpsc::unbounded_channel::<ChuniFeedbackEvent>();
 
         // Start the socket server in a background task
         let socket_path = self.socket_path.clone();
@@ -353,11 +352,11 @@ impl ChuniioProxyServer {
     /// Create internal server with channels (used by the OutputBackend implementation)
     fn new_internal(
         socket_path: PathBuf,
-        input_tx: mpsc::Sender<ChuniInputEvent>,
-        feedback_tx: mpsc::Sender<ChuniFeedbackEvent>,
+        input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
+        feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         next_client_id: Arc<RwLock<u64>>,
-        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> InternalChuniioProxyServer {
         InternalChuniioProxyServer {
             socket_path,
@@ -373,7 +372,7 @@ impl ChuniioProxyServer {
     async fn process_input_packet(
         &mut self,
         packet: InputEventPacket,
-        input_tx: &mpsc::Sender<ChuniInputEvent>,
+        input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
     ) -> eyre::Result<()> {
         trace!(
             "Processing input packet from device {}: {} events",
@@ -416,7 +415,7 @@ impl ChuniioProxyServer {
                     let pressed =
                         matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
                     if let Some(chuni_event) = self.parse_chuniio_event(key, pressed).await {
-                        if let Err(e) = input_tx.send(chuni_event).await {
+                        if let Err(e) = input_tx.send(chuni_event) {
                             warn!(
                                 "Failed to send chuniio input event ({}): {}. Event dropped! Key: {} Pressed: {}",
                                 if pressed { "key press" } else { "key release" },
@@ -434,7 +433,7 @@ impl ChuniioProxyServer {
                             if region < 32 {
                                 let pressure = analog_event.value as u8;
                                 let chuni_event = ChuniInputEvent::SliderTouch { region, pressure };
-                                if let Err(e) = input_tx.send(chuni_event).await {
+                                if let Err(e) = input_tx.send(chuni_event) {
                                     warn!(
                                         "Failed to send chuniio analog slider event (region {}): {}. Event dropped!",
                                         region, e
@@ -608,9 +607,9 @@ struct InternalChuniioProxyServer {
     socket_path: PathBuf,
     protocol_state: Arc<RwLock<ChuniProtocolState>>,
     next_client_id: Arc<RwLock<u64>>,
-    input_tx: mpsc::Sender<ChuniInputEvent>,
-    feedback_tx: mpsc::Sender<ChuniFeedbackEvent>,
-    led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
+    input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
+    feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+    led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
 }
 
 impl InternalChuniioProxyServer {
@@ -619,9 +618,9 @@ impl InternalChuniioProxyServer {
         socket_path: PathBuf,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
         next_client_id: Arc<RwLock<u64>>,
-        input_tx: mpsc::Sender<ChuniInputEvent>,
-        feedback_tx: mpsc::Sender<ChuniFeedbackEvent>,
-        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
+        input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
+        feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> Self {
         Self {
             socket_path,
@@ -700,9 +699,9 @@ impl InternalChuniioProxyServer {
         client_id: u64,
         stream: UnixStream,
         protocol_state: Arc<RwLock<ChuniProtocolState>>,
-        input_tx: mpsc::Sender<ChuniInputEvent>,
-        _feedback_tx: mpsc::Sender<ChuniFeedbackEvent>,
-        led_packet_tx: mpsc::Sender<ChuniLedDataPacket>,
+        input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
+        _feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         info!(
             "Client {} connected and starting packet processing",
@@ -715,7 +714,7 @@ impl InternalChuniioProxyServer {
 
         // Channel for receiving feedback events to send to this client
         let (_client_feedback_tx, mut client_feedback_rx) =
-            mpsc::channel::<ChuniFeedbackEvent>(CHANNEL_BUFFER_SIZE);
+            mpsc::unbounded_channel::<ChuniFeedbackEvent>();
 
         // Spawn task to handle outgoing feedback messages
         let writer_clone = Arc::clone(&writer);
@@ -809,9 +808,9 @@ impl InternalChuniioProxyServer {
         client_id: u64,
         message: ChuniMessage,
         protocol_state: &Arc<RwLock<ChuniProtocolState>>,
-        input_tx: &mpsc::Sender<ChuniInputEvent>,
-        _feedback_tx: &mpsc::Sender<ChuniFeedbackEvent>,
-        led_packet_tx: &mpsc::Sender<ChuniLedDataPacket>,
+        input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
+        _feedback_tx: &mpsc::UnboundedSender<ChuniFeedbackEvent>,
+        led_packet_tx: &mpsc::UnboundedSender<ChuniLedDataPacket>,
     ) -> Result<Option<ChuniMessage>, Box<dyn std::error::Error + Send + Sync>> {
         match message {
             ChuniMessage::JvsPoll => {
@@ -888,7 +887,6 @@ impl InternalChuniioProxyServer {
                                 region: region as u8,
                                 pressure: pressure_value,
                             })
-                            .await
                         {
                             warn!("Failed to send slider touch event: {}", e);
                         }
@@ -919,14 +917,9 @@ impl InternalChuniioProxyServer {
                     data: LedBoardData::Slider(rgb_array),
                 };
 
-                // Use try_send for non-blocking LED packet transmission
-                if let Err(e) = led_packet_tx.try_send(packet) {
-                    // Only warn on full channel, not other errors to reduce log spam
-                    if matches!(e, mpsc::error::TrySendError::Full(_)) {
-                        trace!("LED packet channel full, dropping frame");
-                    } else {
-                        warn!("Failed to send slider LED packet: {}", e);
-                    }
+                // Use send for unbounded LED packet transmission
+                if let Err(e) = led_packet_tx.send(packet) {
+                    warn!("Failed to send slider LED packet: {}", e);
                 }
 
                 // Immediate ACK - no waiting
@@ -959,13 +952,8 @@ impl InternalChuniioProxyServer {
                 };
 
                 // Use try_send for non-blocking LED packet transmission
-                if let Err(e) = led_packet_tx.try_send(packet) {
-                    // Only warn on full channel, not other errors to reduce log spam
-                    if matches!(e, mpsc::error::TrySendError::Full(_)) {
-                        trace!("LED packet channel full, dropping frame");
-                    } else {
-                        warn!("Failed to send LED board {} packet: {}", board, e);
-                    }
+                if let Err(e) = led_packet_tx.send(packet) {
+                    warn!("Failed to send LED board {} packet: {}", board, e);
                 }
 
                 // Immediate ACK - no waiting
@@ -1006,18 +994,16 @@ impl InternalChuniioProxyServer {
     pub async fn send_feedback(
         &self,
         event: ChuniFeedbackEvent,
-    ) -> Result<(), mpsc::error::TrySendError<ChuniFeedbackEvent>> {
+    ) -> Result<(), mpsc::error::SendError<ChuniFeedbackEvent>> {
         self.feedback_tx
             .send(event)
-            .await
-            .map_err(|e| mpsc::error::TrySendError::Closed(e.0))
     }
 
     /// Send input event (for external use)
     pub async fn send_input(
         &self,
         event: ChuniInputEvent,
-    ) -> Result<(), mpsc::error::TrySendError<ChuniInputEvent>> {
+    ) -> Result<(), mpsc::error::SendError<ChuniInputEvent>> {
         // Update internal state - always block for lock
         let mut state = self.protocol_state.write().await;
         state.process_input_event(event.clone());
@@ -1025,8 +1011,6 @@ impl InternalChuniioProxyServer {
         // Forward to input handler
         self.input_tx
             .send(event)
-            .await
-            .map_err(|e| mpsc::error::TrySendError::Closed(e.0))
     }
 }
 
@@ -1038,7 +1022,7 @@ mod tests {
     async fn test_server_creation() {
         let input_stream = InputEventStream::new();
         let feedback_stream = FeedbackEventStream::new();
-        let (led_packet_tx, _led_packet_rx) = mpsc::channel::<ChuniLedDataPacket>(16);
+        let (led_packet_tx, _led_packet_rx) = mpsc::unbounded_channel::<ChuniLedDataPacket>();
         let server = ChuniioProxyServer::new(
             Some(PathBuf::from("/tmp/test_chuniio.sock")),
             input_stream,

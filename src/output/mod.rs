@@ -74,7 +74,7 @@ mod tests {
         let input_stream = InputEventStream::new();
         let feedback_stream = FeedbackEventStream::new();
         let (led_packet_tx, _led_packet_rx) =
-            mpsc::channel::<ChuniLedDataPacket>(CHANNEL_BUFFER_SIZE); // Create a shared counter to track processed events
+            mpsc::unbounded_channel::<ChuniLedDataPacket>(); // Create a shared counter to track processed events
         let processed_events = Arc::new(Mutex::new(HashMap::<String, u32>::new()));
 
         // Create receivers before starting the backends to ensure they exist when we send events

@@ -72,7 +72,7 @@ impl UnixSocketServer {
                         feedback_packet.device_id,
                         feedback_packet.events.len()
                     );
-                    if let Err(e) = feedback_stream_for_client.send(feedback_packet).await {
+                    if let Err(e) = feedback_stream_for_client.send(feedback_packet) {
                         error!("Failed to send client feedback to main stream: {}", e);
                     }
                 } else {

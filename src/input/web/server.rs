@@ -709,7 +709,7 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
 
                             // Instead of broadcasting directly here, send it through the main feedback stream
                             // This ensures all feedback goes through the same unified broadcast mechanism
-                            if let Err(e) = feedback_stream_for_client.send(feedback_packet).await {
+                            if let Err(e) = feedback_stream_for_client.send(feedback_packet) {
                                 error!("Failed to send client feedback to main stream: {}", e);
                             } else {
                                 debug!(

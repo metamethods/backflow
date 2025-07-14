@@ -34,7 +34,6 @@
 
 use crate::config::ChuniIoRgbConfig;
 use crate::feedback::{FeedbackEvent, FeedbackEventPacket, LedEvent};
-use crate::CHANNEL_BUFFER_SIZE;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tokio::net::UnixListener;
@@ -293,22 +292,22 @@ impl ChuniLedDataPacket {
 
 /// Create a new channel for sending CHUNITHM LED data packets.
 pub fn create_chuni_led_channel() -> (
-    mpsc::Sender<ChuniLedDataPacket>,
-    mpsc::Receiver<ChuniLedDataPacket>,
+    mpsc::UnboundedSender<ChuniLedDataPacket>,
+    mpsc::UnboundedReceiver<ChuniLedDataPacket>,
 ) {
-    mpsc::channel(CHANNEL_BUFFER_SIZE) // Larger buffer for high-frequency LED updates
+    mpsc::unbounded_channel() // Unbounded for high-frequency LED updates
 }
 
 /// CHUNITHM JVS reader service that listens on a Unix domain socket,
 /// parses JVS-like LED data packets, and sends them to a channel.
 pub struct ChuniJvsReader {
     socket_path: PathBuf,
-    packet_sender: mpsc::Sender<ChuniLedDataPacket>,
+    packet_sender: mpsc::UnboundedSender<ChuniLedDataPacket>,
 }
 
 impl ChuniJvsReader {
     /// Create a new CHUNITHM JVS reader service.
-    pub fn new(socket_path: PathBuf, packet_sender: mpsc::Sender<ChuniLedDataPacket>) -> Self {
+    pub fn new(socket_path: PathBuf, packet_sender: mpsc::UnboundedSender<ChuniLedDataPacket>) -> Self {
         Self {
             socket_path,
             packet_sender,
@@ -344,7 +343,7 @@ impl ChuniJvsReader {
                             Ok(n) => match parser.parse_packets(&buf[..n]) {
                                 Ok(packets) => {
                                     for packet in packets {
-                                        if let Err(e) = self.packet_sender.try_send(packet) {
+                                        if let Err(e) = self.packet_sender.send(packet) {
                                             warn!("Failed to send LED packet: {}", e);
                                         }
                                     }
@@ -467,7 +466,7 @@ impl Default for ChuniLedParser {
 pub async fn run_chuniio_service(
     config: ChuniIoRgbConfig,
     feedback_stream: crate::feedback::FeedbackEventStream,
-    packet_receiver: mpsc::Receiver<ChuniLedDataPacket>,
+    packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
 ) -> eyre::Result<()> {
     let mut service = ChuniRgbService::new(config, feedback_stream, packet_receiver);
     service.run().await
@@ -575,7 +574,7 @@ mod tests {
 pub struct ChuniRgbService {
     config: ChuniIoRgbConfig,
     feedback_stream: crate::feedback::FeedbackEventStream,
-    packet_receiver: mpsc::Receiver<ChuniLedDataPacket>,
+    packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
 }
 
 impl ChuniRgbService {
@@ -583,7 +582,7 @@ impl ChuniRgbService {
     pub fn new(
         config: ChuniIoRgbConfig,
         feedback_stream: crate::feedback::FeedbackEventStream,
-        packet_receiver: mpsc::Receiver<ChuniLedDataPacket>,
+        packet_receiver: mpsc::UnboundedReceiver<ChuniLedDataPacket>,
     ) -> Self {
         Self {
             config,
@@ -651,12 +650,7 @@ impl ChuniRgbService {
 
             // Send feedback packet - use try_send for non-blocking transmission
             if let Err(e) = self.feedback_stream.try_send(feedback_packet) {
-                // Only log full channel warnings to reduce spam
-                if matches!(e, tokio::sync::mpsc::error::TrySendError::Full(_)) {
-                    // Drop LED updates silently when feedback channel is full
-                } else {
-                    warn!("Failed to send feedback packet: {}", e);
-                }
+                warn!("Failed to send feedback packet: {}", e);
             }
         }
 
