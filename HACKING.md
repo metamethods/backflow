@@ -5,6 +5,71 @@
 - Some JavaScript knowledge (if you want to hack the frontend)
 - Familiarity with (async) Rust (if you want to hack the backend)
 - A working Rust toolchain (see [Rustup](https://rustup.rs/))
+- uinput and evdev
+
+### Architecture Overview
+
+Backflow is designed to be a flexible input routing daemon that can handle various hardware inputs and route them to applications via WebSocket or other backends.
+
+```text
++------------+       +-----------+     +-----------+    +-----------+    +-----------+
+|            |       |           |     |           |    |           |    |           |
+|            |       |           |     |           |    |           |    |   usbmuxd |
+|  WebSocket |       |RS-485/JVS |     |  Unix     |    |   TCP     |    |           |
+|            |       |           |     |  Sockets  |    |           |    |           |
+|            |       |           |     |           |    |           |    |           |
+|            |       |           |     |           |    |           |    |           |
++----+-------+      -+---+-------+     +------+----+    +--+--------+    +------+----+
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |                    |            |                    |     
+     |                   |    +---------------v------------v---+                |     
+     |                   |    |                                |                |     
+     |                   |    |                                |                |     
+     |                   |    |                                |                |     
+     |                   +---->                                |                |     
+     |                        |                                |                |     
+     |                        |         Input Transform        |<---------------+     
+     |                        |              Layer             |                      
+     +------------------------>                                |                      
+                              |                                |                      
+                              |                                |                      
+                              |                                |                      
+            +-----------------++-----------------+-------------+----+                 
+            |                  |                 |                  |                
+            |                  |                 |                  |                 
+            |                  |                 |                  |                 
+            |                  |                 |                  |                 
+            |                  |                 |                  |                 
+            |                  |                 |                  |                 
+            |                  |                 |                  |                 
+       +----+------+     +-----v-----+     +-----v-----+      +-----v-----+           
+       |    v      |     |           |     |           |      |           |           
+       |           |     |   uinput  |     |           |      |   RGB     |           
+       | JVS-over  |     |           |     |  Input    |      |  Lights   |           
+       |  Named    |     |           |     | Plumber   |      |           |           
+       | Socket    |     |           |     |           |      |           |           
+       |           |     |           |     |           |      |           |           
+       +-----------+     +-----------+     +-----------+      +-----------+           
+```
+
+Backflow works by listening for input events from various backends, transforming them into a common format, and then
+marshalling them and routing them to the appropriate actual OS input layer, or send feedback
+back over to their respective backends (if applicable).
+
+The main components are:
+
+- **WebSocket Backend**: Handles WebSocket connections and routes input events to connected clients. (`web/server.rs`)
+- **UNIX Socket Backend**: Provides a Unix socket interface for local applications to connect and receive input events. (`unix_socket/mod.rs`)
+- **Input Transform Layer**: Transforms input events from various backends into a common format. (`device_filter.rs`)
 
 ## Getting Started
 
