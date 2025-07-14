@@ -9,16 +9,70 @@ use crate::feedback::generators::chuni_jvs::ChuniLedDataPacket;
 use crate::input::{InputBackend, InputEventStream};
 use crate::output::{OutputBackend, OutputBackendType};
 use eyre::Result;
+use futures::future::select_all;
+use std::future::Future;
 use std::net::SocketAddr;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+/// Manages the lifecycle of background services (tasks)
+struct ServiceManager {
+    handles: Vec<JoinHandle<()>>,
+}
+
+impl ServiceManager {
+    /// Creates a new, empty ServiceManager.
+    fn new() -> Self {
+        Self {
+            handles: Vec::new(),
+        }
+    }
+
+    /// Spawns a new task and adds its handle to the manager.
+    fn spawn<F>(&mut self, future: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.handles.push(tokio::spawn(future));
+    }
+
+    /// Aborts all managed tasks.
+    fn shutdown(&self) {
+        tracing::info!("Aborting all service tasks...");
+        for handle in &self.handles {
+            handle.abort();
+        }
+    }
+
+    /// Waits for any of the managed services to complete.
+    /// This is useful for detecting unexpected shutdowns.
+    async fn wait_for_any_completion(&mut self) {
+        if self.handles.is_empty() {
+            // If there are no tasks, wait indefinitely.
+            std::future::pending::<()>().await;
+            return;
+        }
+        // `select_all` waits for the first future to complete.
+        let (result, index, _) = select_all(self.handles.iter_mut()).await;
+        tracing::warn!("Service task at index {} completed unexpectedly.", index);
+        if let Err(e) = result {
+            if e.is_panic() {
+                tracing::error!("The task panicked!");
+            }
+        }
+    }
+}
+
 /// Message streams container for passing around shared streams
 pub struct MessageStreams {
-    pub input: InputEventStream,
+    /// Raw input events from all input backends
+    pub raw_input: InputEventStream,
+    /// Feedback events for all backends
     pub feedback: FeedbackEventStream,
-    /// Transformed input stream (after device filtering)
-    pub transformed_input: InputEventStream,
+    /// Dedicated stream for uinput backend (standard evdev events)
+    pub uinput_input: InputEventStream,
+    /// Dedicated stream for chuniio backend (CHUNIIO_ prefixed events)
+    pub chuniio_input: InputEventStream,
 }
 
 /// Represents the actual backend service
@@ -26,12 +80,7 @@ pub struct Backend {
     config: AppConfig,
     streams: MessageStreams,
     device_filter: DeviceFilter,
-
-    // Service handles for graceful shutdown
-    input_handles: Vec<JoinHandle<()>>,
-    filter_handle: Option<JoinHandle<()>>,
-    output_handles: Vec<JoinHandle<()>>,
-    feedback_handles: Vec<JoinHandle<()>>,
+    service_manager: ServiceManager,
 }
 
 impl Backend {
@@ -39,19 +88,17 @@ impl Backend {
     pub fn new(config: AppConfig) -> Self {
         let device_filter = DeviceFilter::new(&config);
         let streams = MessageStreams {
-            input: InputEventStream::new(),
+            raw_input: InputEventStream::new(),
             feedback: FeedbackEventStream::new(),
-            transformed_input: InputEventStream::new(),
+            uinput_input: InputEventStream::new(),
+            chuniio_input: InputEventStream::new(),
         };
 
         Self {
             config,
             streams,
             device_filter,
-            input_handles: Vec::new(),
-            filter_handle: None,
-            output_handles: Vec::new(),
-            feedback_handles: Vec::new(),
+            service_manager: ServiceManager::new(),
         }
     }
 
@@ -62,24 +109,18 @@ impl Backend {
         let (led_packet_tx, led_packet_rx) =
             crate::feedback::generators::chuni_jvs::create_chuni_led_channel();
 
-        // Start device filter service
-        self.start_device_filter_service().await?;
-
-        // Start input services
-        self.start_input_services().await?;
-
-        // Start output services
-        self.start_output_services(led_packet_tx).await?;
-
-        // Start feedback services
-        self.start_feedback_services(led_packet_rx).await?;
+        // Start all services, managed by the ServiceManager
+        self.start_input_services();
+        self.start_device_filter_service();
+        self.start_output_services(led_packet_tx);
+        self.start_feedback_services(led_packet_rx);
 
         tracing::info!("All backend services started successfully");
         Ok(())
     }
 
     /// Start input services based on configuration
-    async fn start_input_services(&mut self) -> Result<()> {
+    fn start_input_services(&mut self) {
         // Start web input backend if configured and enabled
         if let Some(web_config) = &self.config.input.web {
             if web_config.enabled {
@@ -89,38 +130,43 @@ impl Backend {
                     web_config.port
                 );
 
-                let bind_addr: SocketAddr = format!("{}:{}", web_config.host, web_config.port)
-                    .parse()
-                    .map_err(|e| eyre::eyre!("Invalid web backend address: {}", e))?;
-
-                let input_stream = self.streams.input.clone();
+                let bind_addr_str = format!("{}:{}", web_config.host, web_config.port);
+                let input_stream = self.streams.raw_input.clone();
                 let feedback_stream = self.streams.feedback.clone();
 
-                let handle = tokio::spawn(async move {
-                    use crate::input::web::WebServer;
-                    let mut ws_backend =
-                        WebServer::auto_detect_web_ui(bind_addr, input_stream, feedback_stream);
-                    if let Err(e) = ws_backend.run().await {
-                        tracing::error!("WebSocket backend error: {}", e);
+                self.service_manager.spawn(async move {
+                    match bind_addr_str.parse::<SocketAddr>() {
+                        Ok(bind_addr) => {
+                            use crate::input::web::WebServer;
+                            let mut ws_backend = WebServer::auto_detect_web_ui(
+                                bind_addr,
+                                input_stream,
+                                feedback_stream,
+                            );
+                            if let Err(e) = ws_backend.run().await {
+                                tracing::error!("WebSocket backend error: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Invalid web backend address: {}", e);
+                        }
                     }
                 });
-
-                self.input_handles.push(handle);
             } else {
                 tracing::info!("Web input backend is disabled");
             }
         }
 
-        // TODO: Add unix domain socket input backend
+        // Start unix domain socket input backend if configured
         if let Some(unix_config) = &self.config.input.unix {
             tracing::info!(
                 "Starting unix socket input backend at {}",
                 unix_config.path.display()
             );
-            let input_stream = self.streams.input.clone();
+            let input_stream = self.streams.raw_input.clone();
             let feedback_stream = self.streams.feedback.clone();
             let socket_path = unix_config.path.clone();
-            let handle = tokio::spawn(async move {
+            self.service_manager.spawn(async move {
                 use crate::input::unix_socket::UnixSocketServer;
                 let mut unix_backend =
                     UnixSocketServer::new(socket_path, input_stream, feedback_stream);
@@ -128,7 +174,6 @@ impl Backend {
                     tracing::error!("Unix socket backend error: {}", e);
                 }
             });
-            self.input_handles.push(handle);
         }
 
         // Start Brokenithm backend if configured and enabled
@@ -139,24 +184,28 @@ impl Backend {
                     brokenithm_config.host,
                     brokenithm_config.port
                 );
-                let connect_addr: SocketAddr =
-                    format!("{}:{}", brokenithm_config.host, brokenithm_config.port)
-                        .parse()
-                        .map_err(|e| {
-                            eyre::eyre!("Invalid Brokenithm TCP backend address: {}", e)
-                        })?;
-                let input_stream = self.streams.input.clone();
-                let handle = tokio::spawn(async move {
-                    use crate::input::brokenithm::{BrokenithmTcpBackend, BrokenithmTcpConfig};
-                    let mut backend = BrokenithmTcpBackend::new(
-                        BrokenithmTcpConfig::Client { connect_addr },
-                        input_stream,
-                    );
-                    if let Err(e) = backend.run().await {
-                        tracing::error!("Brokenithm TCP client backend error: {}", e);
+                let connect_addr_str =
+                    format!("{}:{}", brokenithm_config.host, brokenithm_config.port);
+                let input_stream = self.streams.raw_input.clone();
+                self.service_manager.spawn(async move {
+                    match connect_addr_str.parse::<SocketAddr>() {
+                        Ok(connect_addr) => {
+                            use crate::input::brokenithm::{
+                                BrokenithmTcpBackend, BrokenithmTcpConfig,
+                            };
+                            let mut backend = BrokenithmTcpBackend::new(
+                                BrokenithmTcpConfig::Client { connect_addr },
+                                input_stream,
+                            );
+                            if let Err(e) = backend.run().await {
+                                tracing::error!("Brokenithm TCP client backend error: {}", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Invalid Brokenithm TCP backend address: {}", e);
+                        }
                     }
                 });
-                self.input_handles.push(handle);
 
                 // Also start iDevice client backend if configured
                 if let Some(idevice_config) = &brokenithm_config.idevice {
@@ -167,11 +216,11 @@ impl Backend {
                             idevice_config.local_port,
                             idevice_config.udid
                         );
-                        let input_stream = self.streams.input.clone();
+                        let input_stream = self.streams.raw_input.clone();
                         let local_port = idevice_config.local_port;
                         let device_port = idevice_config.device_port;
                         let udid = idevice_config.udid.clone();
-                        let handle = tokio::spawn(async move {
+                        self.service_manager.spawn(async move {
                             use crate::input::brokenithm::{
                                 BrokenithmTcpBackend, BrokenithmTcpConfig,
                             };
@@ -187,7 +236,6 @@ impl Backend {
                                 tracing::error!("Brokenithm iDevice client backend error: {}", e);
                             }
                         });
-                        self.input_handles.push(handle);
                     } else {
                         tracing::info!("Brokenithm iDevice client backend is disabled");
                     }
@@ -196,66 +244,91 @@ impl Backend {
                 tracing::info!("Brokenithm TCP client backend is disabled");
             }
         }
-
-        Ok(())
     }
 
-    /// Start device filter service that transforms raw input events and routes them to appropriate backends
-    async fn start_device_filter_service(&mut self) -> Result<()> {
-        tracing::info!("Starting device filter service with backend routing");
+    /// Start device filter and routing service that transforms raw input events and routes them to appropriate backends
+    fn start_device_filter_service(&mut self) {
+        tracing::info!("Starting device filter and routing service");
 
-        let raw_input_stream = self.streams.input.clone();
-        let transformed_output_stream = self.streams.transformed_input.clone();
+        let raw_input_stream = self.streams.raw_input.clone();
+        let uinput_output_stream = self.streams.uinput_input.clone();
+        let chuniio_output_stream = self.streams.chuniio_input.clone();
         let device_filter = self.device_filter.clone();
 
-        let handle = tokio::spawn(async move {
-            let mut last_process_time = std::time::Instant::now();
-            const MIN_PROCESS_INTERVAL: std::time::Duration = std::time::Duration::from_micros(100); // 0.1ms min between packets
-
+        self.service_manager.spawn(async move {
             loop {
                 // Receive from raw input stream
                 if let Some(packet) = raw_input_stream.receive().await {
-                    // Add small delay to prevent race conditions in rapid multitouch scenarios
-                    let elapsed = last_process_time.elapsed();
-                    if elapsed < MIN_PROCESS_INTERVAL {
-                        tokio::time::sleep(MIN_PROCESS_INTERVAL - elapsed).await;
-                    }
-                    last_process_time = std::time::Instant::now();
-
                     match device_filter.transform_packet(packet) {
                         Ok(transformed_packet) => {
-                            // Determine target backend based on device configuration or event type
-                            let should_route_to_chuniio =
-                                transformed_packet.events.iter().any(|event| match event {
+                            // Route events based on their type and device configuration
+                            let mut uinput_events = Vec::new();
+                            let mut chuniio_events = Vec::new();
+
+                            for event in &transformed_packet.events {
+                                match event {
                                     crate::input::InputEvent::Keyboard(keyboard_event) => {
                                         let key = match keyboard_event {
                                             crate::input::KeyboardEvent::KeyPress { key } => key,
                                             crate::input::KeyboardEvent::KeyRelease { key } => key,
                                         };
-                                        key.starts_with("CHUNIIO_")
-                                    }
-                                    _ => false,
-                                });
 
-                            // Log routing decision for debugging
-                            if should_route_to_chuniio {
-                                tracing::trace!(
-                                    "Routing packet from device '{}' to chuniio backend (contains CHUNIIO_ events)",
-                                    transformed_packet.device_id
-                                );
-                            } else {
-                                tracing::trace!(
-                                    "Routing packet from device '{}' to all backends (contains standard events)",
-                                    transformed_packet.device_id
-                                );
+                                        if key.starts_with("CHUNIIO_") {
+                                            // Route CHUNIIO events to chuniio backend
+                                            chuniio_events.push(event.clone());
+                                        } else {
+                                            // Route standard evdev events to uinput backend
+                                            uinput_events.push(event.clone());
+                                        }
+                                    }
+                                    // Route non-keyboard events to uinput by default
+                                    _ => {
+                                        uinput_events.push(event.clone());
+                                    }
+                                }
                             }
 
-                            // Send to transformed stream (for now, keeping existing broadcast behavior)
-                            // TODO: Implement dedicated backend streams for true isolation
-                            if let Err(e) = transformed_output_stream.send(transformed_packet).await
-                            {
-                                tracing::error!("Failed to send transformed packet: {}", e);
-                                break;
+                            // Send to appropriate backends only if they have events
+                            if !uinput_events.is_empty() {
+                                let uinput_packet = crate::input::InputEventPacket {
+                                    device_id: transformed_packet.device_id.clone(),
+                                    timestamp: transformed_packet.timestamp,
+                                    events: uinput_events,
+                                };
+
+                                tracing::trace!(
+                                    "Routing {} events from device '{}' to uinput backend",
+                                    uinput_packet.events.len(),
+                                    uinput_packet.device_id
+                                );
+
+                                if let Err(e) = uinput_output_stream.send(uinput_packet).await {
+                                    tracing::error!(
+                                        "Failed to send packet to uinput backend: {}",
+                                        e
+                                    );
+                                }
+                            }
+
+                            if !chuniio_events.is_empty() {
+                                let chuniio_packet = crate::input::InputEventPacket {
+                                    device_id: transformed_packet.device_id.clone(),
+                                    timestamp: transformed_packet.timestamp,
+                                    events: chuniio_events,
+                                };
+
+                                tracing::trace!(
+                                    "Routing {} events from device '{}' to chuniio backend",
+                                    chuniio_packet.events.len(),
+                                    chuniio_packet.device_id
+                                );
+
+                                if let Err(e) = chuniio_output_stream.send(chuniio_packet).await {
+                                    tracing::error!(
+                                        "Failed to send packet to chuniio backend: {}",
+                                        e
+                                    );
+                                }
                             }
                         }
                         Err(e) => {
@@ -263,26 +336,23 @@ impl Backend {
                         }
                     }
                 } else {
-                    tracing::debug!("Input stream closed, shutting down device filter");
+                    tracing::debug!("Raw input stream closed, shutting down device filter");
                     break;
                 }
             }
         });
-
-        self.filter_handle = Some(handle);
-        Ok(())
     }
 
     /// Start output services based on configuration
-    async fn start_output_services(
+    fn start_output_services(
         &mut self,
         led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>, // switched to unbounded Sender
-    ) -> Result<()> {
+    ) {
         if self.config.output.uinput.enabled {
             tracing::info!("Starting uinput output backend");
 
-            let input_stream = self.streams.transformed_input.clone();
-            let handle = tokio::spawn(async move {
+            let input_stream = self.streams.uinput_input.clone();
+            self.service_manager.spawn(async move {
                 let output_result = crate::output::udev::UdevOutput::new(input_stream);
                 match output_result {
                     Ok(udev_output) => {
@@ -302,8 +372,6 @@ impl Backend {
                     }
                 }
             });
-
-            self.output_handles.push(handle);
         } else {
             tracing::info!("Uinput output backend is disabled");
         }
@@ -316,11 +384,11 @@ impl Backend {
                     chuniio_config.socket_path
                 );
 
-                let input_stream = self.streams.transformed_input.clone();
+                let input_stream = self.streams.chuniio_input.clone();
                 let feedback_stream = self.streams.feedback.clone();
                 let socket_path = chuniio_config.socket_path.clone();
 
-                let handle = tokio::spawn(async move {
+                self.service_manager.spawn(async move {
                     let mut output = OutputBackendType::ChuniioProxy(
                         crate::output::chuniio_proxy::ChuniioProxyServer::new(
                             Some(socket_path),
@@ -334,21 +402,17 @@ impl Backend {
                         tracing::error!("Chuniio proxy backend error: {}", e);
                     }
                 });
-
-                self.output_handles.push(handle);
             } else {
                 tracing::info!("Chuniio proxy output backend is disabled");
             }
         }
-
-        Ok(())
     }
 
     /// Start feedback services based on configuration
-    async fn start_feedback_services(
+    fn start_feedback_services(
         &mut self,
         led_packet_rx: mpsc::UnboundedReceiver<ChuniLedDataPacket>, // switched to unbounded Receiver
-    ) -> Result<()> {
+    ) {
         // Check if chuniio_proxy is enabled
         let chuniio_proxy_enabled = self
             .config
@@ -368,7 +432,7 @@ impl Backend {
                 let config = chuniio_config.clone();
                 let feedback_stream = self.streams.feedback.clone();
 
-                let handle = tokio::spawn(async move {
+                self.service_manager.spawn(async move {
                     use crate::feedback::generators::chuni_jvs::run_chuniio_service;
                     if let Err(e) =
                         run_chuniio_service(config, feedback_stream, led_packet_rx).await
@@ -376,8 +440,6 @@ impl Backend {
                         tracing::error!("ChuniIO RGB feedback service error: {}", e);
                     }
                 });
-
-                self.feedback_handles.push(handle);
             } else {
                 tracing::info!(
                     "Starting ChuniIO RGB feedback service with JVS reader on socket: {:?}",
@@ -394,7 +456,7 @@ impl Backend {
                     crate::feedback::generators::chuni_jvs::create_chuni_led_channel();
 
                 // Start JVS reader
-                let jvs_handle = tokio::spawn(async move {
+                self.service_manager.spawn(async move {
                     use crate::feedback::generators::chuni_jvs::ChuniJvsReader;
                     let mut reader = ChuniJvsReader::new(socket_path, jvs_led_tx);
                     if let Err(e) = reader.run().await {
@@ -403,19 +465,14 @@ impl Backend {
                 });
 
                 // Start RGB service
-                let rgb_handle = tokio::spawn(async move {
+                self.service_manager.spawn(async move {
                     use crate::feedback::generators::chuni_jvs::run_chuniio_service;
                     if let Err(e) = run_chuniio_service(config, feedback_stream, jvs_led_rx).await {
                         tracing::error!("ChuniIO RGB feedback service error: {}", e);
                     }
                 });
-
-                self.feedback_handles.push(jvs_handle);
-                self.feedback_handles.push(rgb_handle);
             }
         }
-
-        Ok(())
     }
 
     /// Wait for all services to complete or handle shutdown
@@ -429,87 +486,21 @@ impl Backend {
                     Ok(_) => tracing::info!("Received Ctrl+C, shutting down gracefully..."),
                     Err(e) => tracing::error!("Failed to listen for Ctrl+C: {}", e),
                 }
-                self.shutdown().await?;
             }
             // Wait for any service to complete (which might indicate an error)
-            _ = self.wait_for_any_service() => {
-                tracing::warn!("One or more services completed unexpectedly");
-                self.shutdown().await?;
+            _ = self.service_manager.wait_for_any_completion() => {
+                tracing::warn!("One or more services completed unexpectedly, shutting down...");
             }
         }
 
+        self.shutdown().await?;
         Ok(())
-    }
-
-    /// Wait for any service to complete
-    async fn wait_for_any_service(&mut self) {
-        // Simple approach: just wait for any output service if any exist
-        // In practice, services shouldn't complete unless there's an error
-        if !self.output_handles.is_empty() {
-            let mut handles = std::mem::take(&mut self.output_handles);
-            tokio::select! {
-                _ = async {
-                    for handle in handles.iter_mut() {
-                        if handle.is_finished() {
-                            let _ = handle.await;
-                            return;
-                        }
-                    }
-                    // If none are finished, wait for the first one
-                    if let Some(handle) = handles.pop() {
-                        let _ = handle.await;
-                    }
-                } => {
-                    tracing::warn!("An output service completed unexpectedly");
-                }
-            }
-            self.output_handles = handles;
-        } else {
-            // No output services, just wait indefinitely
-            // In a real implementation, you might want to monitor input/feedback services too
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-                tracing::debug!("Backend still running...");
-            }
-        }
     }
 
     /// Gracefully shutdown all services
     pub async fn shutdown(&mut self) -> Result<()> {
         tracing::info!("Shutting down backend services...");
-
-        // Abort all input service tasks
-        for handle in &self.input_handles {
-            handle.abort();
-        }
-        tracing::info!("Aborted {} input service tasks", self.input_handles.len());
-
-        // Abort device filter service task
-        if let Some(ref handle) = self.filter_handle {
-            handle.abort();
-            tracing::info!("Aborted device filter service task");
-        }
-
-        // Abort all output service tasks
-        for handle in &self.output_handles {
-            handle.abort();
-        }
-        if !self.output_handles.is_empty() {
-            tracing::info!(
-                "Aborted {} output service task(s)",
-                self.output_handles.len()
-            );
-        }
-
-        // Abort all feedback service tasks
-        for handle in &self.feedback_handles {
-            handle.abort();
-        }
-        tracing::info!(
-            "Aborted {} feedback service tasks",
-            self.feedback_handles.len()
-        );
-
+        self.service_manager.shutdown();
         tracing::info!("Backend shutdown complete");
         Ok(())
     }

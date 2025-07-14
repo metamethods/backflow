@@ -85,45 +85,15 @@ class WebSocketHandler {
     }
   }
 
-  sendKeyEvents(keyStates) {
+  sendPacket(packet) {
     if (!this.isConnected || !this.ws) {
-      return false;
+      return;
     }
-
-    for (let i = 0; i < keyStates.length; i++) {
-      if (keyStates[i] !== this.lastKeyStates[i]) {
-        const cell = document.querySelector(`[data-cell-index="${i}"]`);
-        if (cell) {
-          const key = cell.getAttribute("data-key");
-          const deviceId = this.getDeviceNameForCell(cell);
-          const pressed = keyStates[i] === 1;
-
-          const event = {
-            Keyboard: {
-              [pressed ? "KeyPress" : "KeyRelease"]: {
-                key: key,
-              },
-            },
-          };
-
-          const packet = {
-            device_id: deviceId,
-            timestamp: Date.now(),
-            events: [event],
-          };
-
-          try {
-            this.ws.send(JSON.stringify(packet));
-            console.log(`${key} ${pressed ? "pressed" : "released"}`);
-          } catch (error) {
-            console.error("failed to send ws message:", error);
-          }
-        }
-      }
+    try {
+      this.ws.send(JSON.stringify(packet));
+    } catch (error) {
+      console.error("failed to send ws message:", error);
     }
-
-    this.lastKeyStates = [...keyStates];
-    return true;
   }
 
   handleFeedbackPacket(packet) {
@@ -212,7 +182,6 @@ class WebSocketHandler {
 class GridController {
   constructor() {
     this.webSocketHandler = new WebSocketHandler();
-    this.webSocketHandler.lastKeyStates = [];
 
     this.cells = [];
     this.compiledCells = [];
@@ -347,7 +316,6 @@ class GridController {
       }
 
       this.keyStates = newKeyStates;
-      this.lastKeyStates = [...newKeyStates];
       this.updateTouchCounter();
     } catch (err) {
       console.error("error in updateTouches:", err);
@@ -355,7 +323,44 @@ class GridController {
   }
 
   sendKeys(keyStates) {
-    this.webSocketHandler.sendKeyEvents(keyStates);
+    const eventsByDevice = {};
+
+    for (let i = 0; i < keyStates.length; i++) {
+      if (keyStates[i] !== this.lastKeyStates[i]) {
+        const cell = this.compiledCells[i].ref;
+        if (cell) {
+          const key = cell.getAttribute("data-key");
+          const deviceId = this.webSocketHandler.getDeviceNameForCell(cell);
+          const pressed = keyStates[i] === 1;
+
+          const event = {
+            Keyboard: {
+              [pressed ? "KeyPress" : "KeyRelease"]: {
+                key: key,
+              },
+            },
+          };
+
+          if (!eventsByDevice[deviceId]) {
+            eventsByDevice[deviceId] = [];
+          }
+          eventsByDevice[deviceId].push(event);
+        }
+      }
+    }
+
+    for (const deviceId in eventsByDevice) {
+      if (eventsByDevice[deviceId].length > 0) {
+        const packet = {
+          device_id: deviceId,
+          timestamp: Date.now(),
+          events: eventsByDevice[deviceId],
+        };
+        this.webSocketHandler.sendPacket(packet);
+      }
+    }
+
+    this.lastKeyStates = [...keyStates];
   }
 
   setupEventHandlers() {
@@ -384,7 +389,7 @@ class GridController {
       if (e.target.classList.contains("grid-cell")) {
         e.preventDefault();
         this.updateTouches({
-          preventDefault: () => {},
+          preventDefault: () => { },
           touches: [{ clientX: e.clientX, clientY: e.clientY }],
         });
       }
@@ -392,14 +397,14 @@ class GridController {
 
     container.addEventListener("mouseup", (e) => {
       this.updateTouches({
-        preventDefault: () => {},
+        preventDefault: () => { },
         touches: [],
       });
     });
 
     container.addEventListener("mouseleave", (e) => {
       this.updateTouches({
-        preventDefault: () => {},
+        preventDefault: () => { },
         touches: [],
       });
     });
@@ -419,7 +424,7 @@ class GridController {
   resetAll() {
     this.keyStates.fill(0);
     this.lastKeyStates.fill(0);
-    this.webSocketHandler.lastKeyStates = [...this.lastKeyStates];
+    this.webSocketHandler.lastKeyStates = [];
 
     this.cells.forEach((cell) => {
       cell.classList.remove("active");

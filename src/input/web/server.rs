@@ -48,10 +48,10 @@ impl WebSocketState {
 
         match timestamps.get(&packet.device_id) {
             Some(&last_timestamp) => {
-                if packet.timestamp <= last_timestamp {
-                    // Packet is older than or equal to the last processed packet, discard it
+                if packet.timestamp < last_timestamp {
+                    // Packet is older than the last processed packet, discard it
                     warn!(
-                        "Discarding out-of-order packet for device '{}': timestamp {} <= last {} (seq: {})",
+                        "Discarding out-of-order packet for device '{}': timestamp {} < last {} (seq: {})",
                         packet.device_id, packet.timestamp, last_timestamp, sequence_num
                     );
                     return false;

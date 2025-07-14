@@ -51,6 +51,8 @@ pub fn rgb_to_brg(rgb: &[u8; 3]) -> [u8; 3] {
     // Convert RGB to BRG (Blue, Red, Green)
     [rgb[2], rgb[0], rgb[1]]
 }
+
+#[cfg(test)]
 mod tests {
     use crate::feedback::FeedbackEventStream;
     use crate::feedback::generators::chuni_jvs::ChuniLedDataPacket;

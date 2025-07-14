@@ -12,6 +12,7 @@ axum = { version = "0.8.4", features = ["ws"] }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 evdev = { version = "0.13.1", features = ["tokio", "stream-trait"] }
 eyre = "0.6.12"
+futures = "0.3.31"
 futures-util = "0.3.31"
 nix = "0.30.1"
 serde = { version = "1.0.219", features = ["derive"] }

@@ -231,17 +231,7 @@ impl UdevOutput {
     }
 
     async fn handle_keyboard_event(&mut self, event: KeyboardEvent) -> Result<()> {
-        // Filter out CHUNIIO_ prefixed keys - they should go to chuniio backend
-        let key = match &event {
-            KeyboardEvent::KeyPress { key } => key,
-            KeyboardEvent::KeyRelease { key } => key,
-        };
-
-        if !crate::device_filter::DeviceFilter::is_standard_evdev_key(key) {
-            // tracing::trace!("Skipping non-standard evdev key in udev backend: {}", key);
-            return Ok(());
-        }
-
+        // Events are now pre-routed, so no filtering needed
         let Some(kb_device) = self.backend.get_device_mut("keyboard") else {
             tracing::warn!("No keyboard device available");
             return Ok(());

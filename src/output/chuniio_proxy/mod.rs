@@ -379,41 +379,28 @@ impl ChuniioProxyServer {
             packet.events.len()
         );
 
-        // Check if this looks like a complete state batch from the web interface
-        let chuniio_events: Vec<_> = packet
-            .events
-            .iter()
-            .filter(|event| match event {
-                InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
-                | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
-                    key.starts_with("CHUNIIO_")
-                }
-                _ => false,
-            })
-            .collect();
-
-        // If we have a large number of CHUNIIO events (indicating a batch), process them atomically
-        if chuniio_events.len() > 10 {
+        // Since events are pre-routed, all events should be CHUNIIO events.
+        // We can process them as a batch if there are many, or individually.
+        if packet.events.len() > 1 {
             trace!(
-                "Processing as atomic batch: {} CHUNIIO events",
-                chuniio_events.len()
+                "Processing as atomic batch: {} events",
+                packet.events.len()
             );
             return self.process_input_packet_batch(packet).await;
         }
 
-        // Otherwise, process events individually (for compatibility with other input sources)
+        // Process events individually
         for event in &packet.events {
             match &event {
                 InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
                 | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
-                    // Only process CHUNIIO_ prefixed keys in chuniio backend
-                    if !key.starts_with("CHUNIIO_") {
-                        trace!("Skipping non-CHUNIIO key in chuniio backend: {}", key);
-                        continue;
-                    }
                     let pressed =
                         matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
                     if let Some(chuni_event) = self.parse_chuniio_event(key, pressed).await {
+                        // Also update our own state when processing individual events
+                        let mut state = self.protocol_state.write().await;
+                        state.process_input_event(chuni_event.clone());
+
                         if let Err(e) = input_tx.send(chuni_event) {
                             warn!(
                                 "Failed to send chuniio input event ({}): {}. Event dropped! Key: {} Pressed: {}",
@@ -426,7 +413,7 @@ impl ChuniioProxyServer {
                     }
                 }
                 InputEvent::Analog(analog_event) => {
-                    // Only process CHUNIIO_SLIDER_ analog keys in chuniio backend
+                    // All analog events are assumed to be CHUNIIO_SLIDER events
                     if let Some(key) = analog_event.keycode.strip_prefix("CHUNIIO_SLIDER_") {
                         if let Ok(region) = key.parse::<u8>() {
                             if region < 32 {
@@ -440,16 +427,11 @@ impl ChuniioProxyServer {
                                 }
                             }
                         }
-                    } else {
-                        trace!(
-                            "Skipping non-CHUNIIO analog event in chuniio backend: {:?}",
-                            analog_event
-                        );
                     }
                 }
                 // Handle other input types as needed
                 _ => {
-                    trace!("Ignoring non-keyboard event: {:?}", event);
+                    trace!("Ignoring non-keyboard/analog event: {:?}", event);
                 }
             }
         }
@@ -466,31 +448,25 @@ impl ChuniioProxyServer {
         // Extract current state and apply all changes atomically
         let mut state = self.protocol_state.write().await;
 
-        // Reset slider state to zero (released state)
-        state.slider_state.pressure = [0; 32];
-
-        // Reset operator buttons and IR beams to default state
-        state.jvs_state.opbtn = 0;
-        state.jvs_state.beams = 0x3F; // All beams clear by default
-
         // Apply all events in the batch
         for event in &packet.events {
             match &event {
                 InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
                 | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
-                    if !key.starts_with("CHUNIIO_") {
-                        continue;
-                    }
                     let pressed =
                         matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
 
                     // Apply state changes directly without sending individual events
-                    if key == "CHUNIIO_COIN" && pressed {
-                        state.coin_counter += 1;
-                        trace!("Batch: Coin inserted, counter now: {}", state.coin_counter);
+                    if key == "CHUNIIO_COIN" {
+                        if pressed {
+                            state.coin_counter += 1;
+                            trace!("Batch: Coin inserted, counter now: {}", state.coin_counter);
+                        }
                     } else if key == "CHUNIIO_TEST" {
                         if pressed {
                             state.jvs_state.opbtn |= CHUNI_IO_OPBTN_TEST;
+                        } else {
+                            state.jvs_state.opbtn &= !CHUNI_IO_OPBTN_TEST;
                         }
                         trace!(
                             "Batch: Test button {}",
@@ -499,6 +475,8 @@ impl ChuniioProxyServer {
                     } else if key == "CHUNIIO_SERVICE" {
                         if pressed {
                             state.jvs_state.opbtn |= CHUNI_IO_OPBTN_SERVICE;
+                        } else {
+                            state.jvs_state.opbtn &= !CHUNI_IO_OPBTN_SERVICE;
                         }
                         trace!(
                             "Batch: Service button {}",
@@ -535,16 +513,20 @@ impl ChuniioProxyServer {
             }
         }
 
+        let active_regions: Vec<usize> = state
+            .slider_state
+            .pressure
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &p)| if p > 0 { Some(i) } else { None })
+            .collect();
+
         trace!(
-            "Batch processing complete - opbtn: {}, beams: {:#06b}, slider active regions: {}",
+            "Batch processing complete - opbtn: {}, beams: {:#06b}, slider active regions: {} ({:?})",
             state.jvs_state.opbtn,
             state.jvs_state.beams,
-            state
-                .slider_state
-                .pressure
-                .iter()
-                .filter(|&&p| p > 0)
-                .count()
+            active_regions.len(),
+            active_regions
         );
 
         Ok(())
@@ -554,7 +536,11 @@ impl ChuniioProxyServer {
     async fn parse_chuniio_event(&mut self, key: &str, pressed: bool) -> Option<ChuniInputEvent> {
         // trace!("Parsing event: {} -> {}", key, pressed);
         let event = if key == "CHUNIIO_COIN" {
-            Some(ChuniInputEvent::CoinInsert)
+            if pressed {
+                Some(ChuniInputEvent::CoinInsert)
+            } else {
+                None // Coin release is not an event
+            }
         } else if key == "CHUNIIO_TEST" {
             Some(ChuniInputEvent::OperatorButton {
                 button: CHUNI_IO_OPBTN_TEST,
@@ -588,12 +574,14 @@ impl ChuniioProxyServer {
                     broken: pressed,
                 })
         } else {
+            warn!("Received non-CHUNIIO key in chuniio backend: {}", key);
             None
         };
 
         if let Some(ref _evt) = event {
             // trace!("Generated chuniio event: {:?}", evt);
-        } else {
+        } else if !key.starts_with("CHUNIIO_") {
+            // Only warn if it's not a CHUNIIO key, to avoid noise from coin release etc.
             warn!("No chuniio event generated for key: {}", key);
         }
 
