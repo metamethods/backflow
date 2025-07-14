@@ -221,8 +221,8 @@ impl OutputBackend for ChuniioProxyServer {
                             // Update internal state - use blocking write to ensure all events are processed
                             let mut state = self.protocol_state.write().await;
                             state.process_input_event(event);
-                            trace!("Updated proxy state - opbtn: {}, beams: {}, coins: {}\nslider: {:?}",
-                                  state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter, state.slider_state.pressure);
+                            // trace!("Updated proxy state - opbtn: {}, beams: {}, coins: {}\nslider: {:?}",
+                            //       state.jvs_state.opbtn, state.jvs_state.beams, state.coin_counter, state.slider_state.pressure);
                         }
                         None => {
                             tracing::debug!("Chuniio input channel closed");
