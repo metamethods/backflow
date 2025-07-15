@@ -214,6 +214,7 @@ class GridController {
     this.container = document.getElementById("grid-container");
     this.overlapThreshold = 0;
     this.touchCounter = null;
+    this.activeTouches = new Map(); // Track which cell each touch ID is locked to
 
     this.init();
   }
@@ -251,27 +252,32 @@ class GridController {
       const cell = this.cells[i];
       const prev = cell.previousElementSibling;
       const next = cell.nextElementSibling;
+      const rect = cell.getBoundingClientRect();
+      // Find the closest container with data-slider
+      const sectionContainer = cell.closest("[data-cell-section]");
+      let sliderAttr = sectionContainer ? sectionContainer.getAttribute("data-slider") : null;
+      let sliderEnabled = true;
+      if (sliderAttr !== null) {
+        sliderEnabled = sliderAttr === "true";
+      }
 
       const compiled = {
         index: i,
-        top: cell.offsetTop,
-        bottom: cell.offsetTop + cell.offsetHeight,
-        left: cell.offsetLeft,
-        right: cell.offsetLeft + cell.offsetWidth,
-        almostLeft: prev ? cell.offsetLeft + this.overlapThreshold : -99999,
+        top: rect.top,
+        bottom: rect.bottom,
+        left: rect.left,
+        right: rect.right,
+        almostLeft: prev ? rect.left + this.overlapThreshold : -99999,
         almostRight: next
-          ? cell.offsetLeft + cell.offsetWidth - this.overlapThreshold
+          ? rect.right - this.overlapThreshold
           : 99999,
         prevIndex: prev ? parseInt(prev.getAttribute("data-cell-index")) : null,
         nextIndex: next ? parseInt(next.getAttribute("data-cell-index")) : null,
         ref: cell,
-        section: cell
-          .closest("[data-cell-section]")
-          ?.getAttribute("data-cell-section"),
+        section: sectionContainer?.getAttribute("data-cell-section"),
         isAirSensor:
-          cell
-            .closest("[data-cell-section]")
-            ?.getAttribute("data-cell-section") === "air-sensor",
+          sectionContainer?.getAttribute("data-cell-section") === "air-sensor",
+        sliderEnabled,
       };
 
       this.compiledCells.push(compiled);
@@ -312,25 +318,53 @@ class GridController {
       e.preventDefault();
 
       const newKeyStates = new Array(this.keyStates.length).fill(0);
+      const currentTouchIds = new Set();
 
       for (let i = 0; i < e.touches.length; i++) {
         const touch = e.touches[i];
+        const touchId = touch.identifier;
         const x = touch.clientX;
         const y = touch.clientY;
+        currentTouchIds.add(touchId);
 
-        const cell = this.getCell(x, y);
-        if (!cell) continue;
+        let targetCell = this.getCell(x, y);
 
-        this.setKey(newKeyStates, cell.index);
+        // If this touch is already locked to a cell and slider is disabled, keep using the locked cell
+        if (this.activeTouches.has(touchId)) {
+          const lockedCell = this.activeTouches.get(touchId);
+          if (!lockedCell.sliderEnabled) {
+            targetCell = lockedCell;
+          } else {
+            // Update the locked cell if sliding is enabled
+            if (targetCell) {
+              this.activeTouches.set(touchId, targetCell);
+            }
+          }
+        } else if (targetCell) {
+          // New touch - lock it to the first cell it hits
+          this.activeTouches.set(touchId, targetCell);
+        }
 
-        if (!cell.isAirSensor) {
-          if (x < cell.almostLeft && cell.prevIndex !== null) {
-            this.setKey(newKeyStates, cell.prevIndex);
+        if (!targetCell) continue;
+
+        this.setKey(newKeyStates, targetCell.index);
+
+        // Only allow sliding if sliderEnabled is true for this cell
+        if (targetCell.sliderEnabled && !targetCell.isAirSensor) {
+          if (x < targetCell.almostLeft && targetCell.prevIndex !== null) {
+            this.setKey(newKeyStates, targetCell.prevIndex);
           }
 
-          if (x > cell.almostRight && cell.nextIndex !== null) {
-            this.setKey(newKeyStates, cell.nextIndex);
+          if (x > targetCell.almostRight && targetCell.nextIndex !== null) {
+            this.setKey(newKeyStates, targetCell.nextIndex);
           }
+        }
+      }
+
+      // Clean up touches that are no longer active
+      for (const touchId of this.activeTouches.keys()) {
+        if (!currentTouchIds.has(touchId)) {
+          this.activeTouches.delete(touchId);
         }
       }
 
@@ -426,7 +460,7 @@ class GridController {
       if (e.target.classList.contains("grid-cell")) {
         e.preventDefault();
         this.updateTouches({
-          preventDefault: () => {},
+          preventDefault: () => { },
           touches: [{ clientX: e.clientX, clientY: e.clientY }],
         });
       }
@@ -434,14 +468,14 @@ class GridController {
 
     container.addEventListener("mouseup", (e) => {
       this.updateTouches({
-        preventDefault: () => {},
+        preventDefault: () => { },
         touches: [],
       });
     });
 
     container.addEventListener("mouseleave", (e) => {
       this.updateTouches({
-        preventDefault: () => {},
+        preventDefault: () => { },
         touches: [],
       });
     });

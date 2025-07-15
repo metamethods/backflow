@@ -1,72 +1,99 @@
 /* Taiko-specific layout overrides */
 
-/* Drumhead area - centered circle (first for priority) */
+/* Left rim area - left half of screen */
+.grid-container[data-section="taiko-rim-left"] {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 50vw;
+    height: 100vh;
+    border: 2px solid white;
+    background: black;
+    z-index: 1;
+}
+
+/* Right rim area - right half of screen */
+.grid-container[data-section="taiko-rim-right"] {
+    position: absolute;
+    top: 0;
+    left: 50vw;
+    width: 50vw;
+    height: 100vh;
+    border: 2px solid white;
+    background: black;
+    z-index: 1;
+}
+
+/* Drumhead area - centered circle (bigger for ergonomics) */
 .grid-container[data-section="taiko-drumhead"] {
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 50vmin;
-    height: 50vmin;
+    width: 70vmin;
+    height: 70vmin;
     border: 2px solid white;
     border-radius: 50%;
     background: black;
     z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
 }
 
-/* Top rim area - covers top portion of screen but excludes center */
-.grid-container[data-section="taiko-rim-top"] {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 25vh;
-    border: 2px solid white;
-    background: black;
-    z-index: 1;
-}
-
-/* Bottom rim area - covers bottom portion of screen but excludes center */
-.grid-container[data-section="taiko-rim-bottom"] {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    width: 100vw;
-    height: 25vh;
-    border: 2px solid white;
-    background: black;
-    z-index: 1;
-}
-
-/* Grid rows and cells styling */
-.grid-container[data-section="taiko-rim-top"] .grid-row,
-.grid-container[data-section="taiko-rim-bottom"] .grid-row,
 .grid-container[data-section="taiko-drumhead"] .grid-row {
-    border: none;
+    width: 100%;
     height: 100%;
-}
-
-.grid-container[data-section="taiko-drumhead"] .grid-cell,
-.grid-container[data-section="taiko-rim-top"] .grid-cell,
-.grid-container[data-section="taiko-rim-bottom"] .grid-cell {
+    display: flex;
     border: none;
+    position: relative;
+}
+
+.grid-container[data-section="taiko-drumhead"] .drumhead-left {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 50%;
+    height: 100%;
+    clip-path: ellipse(100% 50% at 100% 50%);
     background: transparent;
+    pointer-events: auto;
 }
 
-/* Split cells for left/right in rim areas */
-.grid-container[data-section="taiko-rim-top"] .grid-cell:first-child,
-.grid-container[data-section="taiko-rim-bottom"] .grid-cell:first-child {
-    border-right: 1px solid white;
+.grid-container[data-section="taiko-drumhead"] .drumhead-right {
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 50%;
+    height: 100%;
+    clip-path: ellipse(100% 50% at 0% 50%);
+    background: transparent;
+    pointer-events: auto;
 }
 
-/* Split cells for left/right in drumhead */
-.grid-container[data-section="taiko-drumhead"] .grid-cell:first-child {
-    border-right: 1px solid white;
+.grid-container[data-section="taiko-drumhead"] .drumhead-left.active,
+.grid-container[data-section="taiko-drumhead"] .drumhead-right.active {
+    background-color: red !important;
+    color: white !important;
+}
+
+/* Divider line */
+.grid-container[data-section="taiko-drumhead"]::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    width: 0;
+    height: 100%;
+    border-left: 2px solid white;
+    z-index: 20;
+    pointer-events: none;
 }
 
 /* Active states for Taiko elements */
-.grid-container[data-section="taiko-rim-top"] .grid-cell.active,
-.grid-container[data-section="taiko-rim-bottom"] .grid-cell.active {
+.grid-container[data-section="taiko-rim-left"] .grid-cell.active,
+.grid-container[data-section="taiko-rim-right"] .grid-cell.active {
     background-color: blue !important;
     color: white !important;
 }
