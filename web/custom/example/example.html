@@ -8,15 +8,15 @@
         <script src="/script.js" defer></script> <!-- main backflow script, absolutely required -->
     </head>
     <body>
-        <div class="grid-container">
+        <div class="grid-container" id="grid-container" data-overlap="0">
             <div class="grid-row">
                 <!--
                 all pretty self explanatory, but the most important thing here is:
-                - The grid-container class is used to create a grid layout.
+                - The grid-container class is used to create a grid layout 
                 - The grid-row class is used to create a row within the grid layout.
                 - The grid-cell class is used to create a cell within the grid layout.
                 - The data-key attribute is used to specify the key that will be used to control the cell.
-                
+                - data-overlap is used to set the overlap threshold in the grid-container. if not set, it's 0.
                 you don't *need* to adhere to this specific layout, you can write your own CSS as long as the key is a div,
                 and data-key is specified to a valid keycode on the keyboard.
                 -->

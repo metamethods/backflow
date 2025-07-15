@@ -18,7 +18,7 @@
                 <button class="service-btn" data-key="KEY_ENTER">Read Card</button>
             </div>
         </div>
-        <div class="grid-container">
+        <div class="grid-container" id="grid-container" data-overlap="15">
             <div class="grid-row horizontal" data-cell-section="air-sensor">
                 <div class="grid-cell" data-key="CHUNIIO_IR_5"></div>
                 <div class="grid-cell" data-key="CHUNIIO_IR_4"></div>
@@ -56,6 +56,10 @@
                 const serviceButton = document.getElementById('serviceButton');
                 const servicePopup = document.getElementById('servicePopup');
                 const serviceButtons = document.querySelectorAll('.service-btn');
+
+                if (!serviceButton || !servicePopup) {
+                    return; // No service menu elements found
+                }
 
                 // Handle both mouse and touch events for the service button
                 serviceButton.addEventListener('mousedown', startServiceHold);
@@ -147,7 +151,7 @@
                         const key = event.target.dataset.key;
                         console.log('🔧 Service button pressed:', key);
 
-                        if (key && window.gridController) {
+                        if (key && window.gridController && window.gridController.webSocketHandler) {
                             window.gridController.webSocketHandler.sendKeyboardEvent(key, true, "service-menu");
                             setTimeout(() => {
                                 window.gridController.webSocketHandler.sendKeyboardEvent(key, false, "service-menu");

@@ -171,6 +171,29 @@ class WebSocketHandler {
     return "chunitroller-webapp";
   }
 
+  sendKeyboardEvent(key, pressed, deviceId = "service-menu") {
+    if (!this.isConnected || !this.ws) {
+      console.warn('Cannot send keyboard event: WebSocket not connected');
+      return;
+    }
+
+    const event = {
+      Keyboard: {
+        [pressed ? "KeyPress" : "KeyRelease"]: {
+          key: key,
+        },
+      },
+    };
+
+    const packet = {
+      device_id: deviceId,
+      timestamp: Date.now(),
+      events: [event],
+    };
+
+    this.sendPacket(packet);
+  }
+
   close() {
     if (this.ws) {
       this.ws.close();
@@ -188,8 +211,8 @@ class GridController {
     this.keyStates = [];
     this.lastKeyStates = [];
     this.pendingKeyStates = [];
-
-    this.overlapThreshold = 15;
+    this.container = document.getElementById("grid-container");
+    this.overlapThreshold = 0;
     this.touchCounter = null;
 
     this.init();
@@ -198,6 +221,14 @@ class GridController {
   init() {
     this.cells = document.querySelectorAll(".grid-cell");
     this.touchCounter = document.getElementById("touchCounter");
+
+    const overlapAttr = this.container.getAttribute("data-overlap");
+    if (overlapAttr !== null) {
+      const parsed = parseInt(overlapAttr, 10);
+      if (!isNaN(parsed)) {
+        this.overlapThreshold = parsed;
+      }
+    }
 
     this.cells.forEach((cell, index) => {
       cell.setAttribute("data-cell-index", index);
@@ -227,9 +258,9 @@ class GridController {
         bottom: cell.offsetTop + cell.offsetHeight,
         left: cell.offsetLeft,
         right: cell.offsetLeft + cell.offsetWidth,
-        almostLeft: prev ? cell.offsetLeft + cell.offsetWidth / 4 : -99999,
+        almostLeft: prev ? cell.offsetLeft + this.overlapThreshold : -99999,
         almostRight: next
-          ? cell.offsetLeft + (cell.offsetWidth * 3) / 4
+          ? cell.offsetLeft + cell.offsetWidth - this.overlapThreshold
           : 99999,
         prevIndex: prev ? parseInt(prev.getAttribute("data-cell-index")) : null,
         nextIndex: next ? parseInt(next.getAttribute("data-cell-index")) : null,
@@ -314,7 +345,9 @@ class GridController {
         }
       }
 
-      if (JSON.stringify(newKeyStates) !== JSON.stringify(this.pendingKeyStates)) {
+      if (
+        JSON.stringify(newKeyStates) !== JSON.stringify(this.pendingKeyStates)
+      ) {
         this.throttledSendKeys(newKeyStates);
         this.pendingKeyStates = [...newKeyStates];
       }
@@ -393,7 +426,7 @@ class GridController {
       if (e.target.classList.contains("grid-cell")) {
         e.preventDefault();
         this.updateTouches({
-          preventDefault: () => { },
+          preventDefault: () => {},
           touches: [{ clientX: e.clientX, clientY: e.clientY }],
         });
       }
@@ -401,14 +434,14 @@ class GridController {
 
     container.addEventListener("mouseup", (e) => {
       this.updateTouches({
-        preventDefault: () => { },
+        preventDefault: () => {},
         touches: [],
       });
     });
 
     container.addEventListener("mouseleave", (e) => {
       this.updateTouches({
-        preventDefault: () => { },
+        preventDefault: () => {},
         touches: [],
       });
     });

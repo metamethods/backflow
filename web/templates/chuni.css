@@ -28,7 +28,7 @@
 
 .service-popup {
     position: fixed;
-    top: 60px;
+    top: 10px;
     left: 10px;
     background: rgba(0, 0, 0, 0.9);
     border: 2px solid white;
