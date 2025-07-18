@@ -269,6 +269,13 @@ class GridController {
         sliderEnabled = sliderAttr === "true";
       }
 
+      // Check for feedback setting - defaults to true
+      let feedbackEnabled = true;
+      const feedbackAttr = sectionContainer ? sectionContainer.getAttribute("data-feedback") : null;
+      if (feedbackAttr !== null) {
+        feedbackEnabled = feedbackAttr === "true";
+      }
+
       const compiled = {
         index: i,
         top: rect.top,
@@ -286,6 +293,7 @@ class GridController {
         isAirSensor:
           sectionContainer?.getAttribute("data-cell-section") === "air-sensor",
         sliderEnabled,
+        feedbackEnabled,
       };
 
       this.compiledCells.push(compiled);
@@ -413,10 +421,13 @@ class GridController {
       for (let i = 0; i < this.compiledCells.length; i++) {
         const cell = this.compiledCells[i];
         if (newKeyStates[i] !== this.lastKeyStates[i]) {
-          if (newKeyStates[i]) {
-            cell.ref.classList.add("active");
-          } else {
-            cell.ref.classList.remove("active");
+          // Only apply visual feedback if feedbackEnabled is true
+          if (cell.feedbackEnabled) {
+            if (newKeyStates[i]) {
+              cell.ref.classList.add("active");
+            } else {
+              cell.ref.classList.remove("active");
+            }
           }
         }
       }
@@ -540,8 +551,12 @@ class GridController {
     this.pendingKeyStates.fill(0);
     this.webSocketHandler.lastKeyStates = [];
 
-    this.cells.forEach((cell) => {
-      cell.classList.remove("active");
+    // Only remove active class from cells that have feedback enabled
+    this.cells.forEach((cell, index) => {
+      const compiledCell = this.compiledCells[index];
+      if (compiledCell && compiledCell.feedbackEnabled) {
+        cell.classList.remove("active");
+      }
     });
 
     this.updateTouchCounter();
