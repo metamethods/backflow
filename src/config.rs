@@ -156,7 +156,8 @@ pub struct FeedbackConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ChuniIoRgbConfig {
     /// Path to the Unix domain socket for ChuniIo RGB feedback, usually from Outflow bridge from inside Wine
-    pub socket_path: PathBuf,
+    /// Optional - if not specified, will use chuniio_proxy data directly
+    pub socket_path: Option<PathBuf>,
     /// Number of RGB outputs to clamp to
     /// Default will be at 32
     #[serde(default = "default_slider_lights")]
@@ -166,6 +167,16 @@ pub struct ChuniIoRgbConfig {
     /// Useful if you want to route to specific lights
     #[serde(default)]
     pub slider_id_offset: u32,
+}
+
+impl Default for ChuniIoRgbConfig {
+    fn default() -> Self {
+        Self {
+            socket_path: None,
+            slider_clamp_lights: default_slider_lights(),
+            slider_id_offset: 0,
+        }
+    }
 }
 
 fn default_slider_lights() -> u32 {
@@ -197,7 +208,8 @@ mod keyexpr_remap_serde {
     where
         S: Serializer,
     {
-        let as_str_map: HashMap<&String, String> = map.iter().map(|(k, v)| (k, format!("{}", v))).collect();
+        let as_str_map: HashMap<&String, String> =
+            map.iter().map(|(k, v)| (k, format!("{}", v))).collect();
         as_str_map.serialize(serializer)
     }
 
@@ -206,7 +218,10 @@ mod keyexpr_remap_serde {
         D: Deserializer<'de>,
     {
         let str_map = HashMap::<String, String>::deserialize(deserializer)?;
-        Ok(str_map.into_iter().map(|(k, v)| (k, KeyExpr::parse(&v))).collect())
+        Ok(str_map
+            .into_iter()
+            .map(|(k, v)| (k, KeyExpr::parse(&v)))
+            .collect())
     }
 }
 
@@ -353,7 +368,10 @@ mod tests {
         "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let chuniio = config.feedback.chuniio.unwrap();
-        assert_eq!(chuniio.socket_path, PathBuf::from("/tmp/chuniio.sock"));
+        assert_eq!(
+            chuniio.socket_path,
+            Some(PathBuf::from("/tmp/chuniio.sock"))
+        );
         assert_eq!(chuniio.slider_clamp_lights, 32);
         assert_eq!(chuniio.slider_id_offset, 0);
     }
@@ -368,8 +386,25 @@ mod tests {
         "#;
         let config: AppConfig = toml::from_str(toml_str).unwrap();
         let chuniio = config.feedback.chuniio.unwrap();
+        assert_eq!(
+            chuniio.socket_path,
+            Some(PathBuf::from("/tmp/chuniio.sock"))
+        );
         assert_eq!(chuniio.slider_clamp_lights, 16);
         assert_eq!(chuniio.slider_id_offset, 2);
+    }
+
+    #[test]
+    fn test_chuniio_rgb_config_no_socket() {
+        let toml_str = r#"
+            [feedback.chuniio]
+            slider_clamp_lights = 16
+        "#;
+        let config: AppConfig = toml::from_str(toml_str).unwrap();
+        let chuniio = config.feedback.chuniio.unwrap();
+        assert_eq!(chuniio.socket_path, None);
+        assert_eq!(chuniio.slider_clamp_lights, 16);
+        assert_eq!(chuniio.slider_id_offset, 0);
     }
 
     #[test]
@@ -610,19 +645,26 @@ mod tests {
         let device_config = config.device.get("advanced_device").unwrap();
         assert_eq!(device_config.map_backend, "uinput");
         assert_eq!(device_config.device_type, "keyboard");
-        
+
         // Test combo expression
         assert_eq!(
             device_config.remap.get("SLIDER_1"),
-            Some(&KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]))
+            Some(&KeyExpr::Combo(vec![
+                "KEY_A".to_string(),
+                "KEY_B".to_string()
+            ]))
         );
-        
+
         // Test sequence expression
         assert_eq!(
             device_config.remap.get("SLIDER_2"),
-            Some(&KeyExpr::Sequence(vec!["KEY_C".to_string(), "KEY_D".to_string(), "KEY_E".to_string()]))
+            Some(&KeyExpr::Sequence(vec![
+                "KEY_C".to_string(),
+                "KEY_D".to_string(),
+                "KEY_E".to_string()
+            ]))
         );
-        
+
         // Test single expression
         assert_eq!(
             device_config.remap.get("GAME_1"),
@@ -635,22 +677,42 @@ mod tests {
         // Test single key
         let single = KeyExpr::parse("KEY_A");
         assert_eq!(single, KeyExpr::Single("KEY_A".to_string()));
-        
+
         // Test combo
         let combo = KeyExpr::parse("KEY_A+KEY_B");
-        assert_eq!(combo, KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
-        
+        assert_eq!(
+            combo,
+            KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()])
+        );
+
         // Test sequence
         let sequence = KeyExpr::parse("KEY_A,KEY_B,KEY_C");
-        assert_eq!(sequence, KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
-        
+        assert_eq!(
+            sequence,
+            KeyExpr::Sequence(vec![
+                "KEY_A".to_string(),
+                "KEY_B".to_string(),
+                "KEY_C".to_string()
+            ])
+        );
+
         // Test combo with spaces
         let combo_spaces = KeyExpr::parse(" KEY_A + KEY_B ");
-        assert_eq!(combo_spaces, KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
-        
+        assert_eq!(
+            combo_spaces,
+            KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()])
+        );
+
         // Test sequence with spaces
         let sequence_spaces = KeyExpr::parse(" KEY_A , KEY_B , KEY_C ");
-        assert_eq!(sequence_spaces, KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+        assert_eq!(
+            sequence_spaces,
+            KeyExpr::Sequence(vec![
+                "KEY_A".to_string(),
+                "KEY_B".to_string(),
+                "KEY_C".to_string()
+            ])
+        );
     }
 
     #[test]
@@ -658,13 +720,17 @@ mod tests {
         // Test single key
         let single = KeyExpr::Single("KEY_A".to_string());
         assert_eq!(format!("{}", single), "KEY_A");
-        
+
         // Test combo
         let combo = KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]);
         assert_eq!(format!("{}", combo), "KEY_A+KEY_B");
-        
+
         // Test sequence
-        let sequence = KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]);
+        let sequence = KeyExpr::Sequence(vec![
+            "KEY_A".to_string(),
+            "KEY_B".to_string(),
+            "KEY_C".to_string(),
+        ]);
         assert_eq!(format!("{}", sequence), "KEY_A,KEY_B,KEY_C");
     }
 }

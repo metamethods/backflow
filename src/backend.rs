@@ -422,34 +422,35 @@ impl Backend {
             .map(|config| config.enabled)
             .unwrap_or(false);
 
-        if let Some(chuniio_config) = &self.config.feedback.chuniio {
-            if chuniio_proxy_enabled {
-                tracing::info!(
-                    "Starting unified ChuniIO RGB feedback service (fed by chuniio_proxy)"
-                );
+        // Auto-enable chuniio feedback if chuniio_proxy is enabled but feedback.chuniio is not configured
+        let should_enable_chuniio_feedback =
+            chuniio_proxy_enabled || self.config.feedback.chuniio.is_some();
 
-                // Start the unified service that processes packets from chuniio_proxy
-                let config = chuniio_config.clone();
-                let feedback_stream = self.streams.feedback.clone();
+        tracing::debug!(
+            should_enable_chuniio_feedback,
+            chuniio_proxy_enabled,
+            feedback_chuniio_is_some = self.config.feedback.chuniio.is_some()
+        );
 
-                self.service_manager.spawn(async move {
-                    use crate::feedback::generators::chuni_jvs::run_chuniio_service;
-                    if let Err(e) =
-                        run_chuniio_service(config, feedback_stream, led_packet_rx).await
-                    {
-                        tracing::error!("ChuniIO RGB feedback service error: {}", e);
-                    }
-                });
+        if should_enable_chuniio_feedback {
+            // Use configured chuniio config or create default one
+            let chuniio_config = if let Some(config) = &self.config.feedback.chuniio {
+                config.clone()
             } else {
+                // Create default config for chuniio_proxy-only feedback
+                crate::config::ChuniIoRgbConfig::default()
+            };
+
+            if let Some(socket_path) = &chuniio_config.socket_path {
                 tracing::info!(
                     "Starting ChuniIO RGB feedback service with JVS reader on socket: {:?}",
-                    chuniio_config.socket_path
+                    socket_path
                 );
 
                 // Start both the JVS reader and the RGB service
                 let config = chuniio_config.clone();
                 let feedback_stream = self.streams.feedback.clone();
-                let socket_path = chuniio_config.socket_path.clone();
+                let socket_path = socket_path.clone();
 
                 // Create a new channel for the JVS reader to send packets
                 let (jvs_led_tx, jvs_led_rx) =
@@ -471,7 +472,42 @@ impl Backend {
                         tracing::error!("ChuniIO RGB feedback service error: {}", e);
                     }
                 });
+
+                // Consume and discard LED packets from chuniio_proxy since we're using JVS reader
+                self.service_manager.spawn(async move {
+                    let mut led_packet_rx = led_packet_rx;
+                    while let Some(_packet) = led_packet_rx.recv().await {
+                        // Discard packets to prevent channel closure
+                    }
+                });
+            } else {
+                tracing::info!(
+                    "Starting unified ChuniIO RGB feedback service (fed by chuniio_proxy, no socket)"
+                );
+
+                // Start the unified service that processes packets from chuniio_proxy
+                let config = chuniio_config.clone();
+                let feedback_stream = self.streams.feedback.clone();
+
+                self.service_manager.spawn(async move {
+                    use crate::feedback::generators::chuni_jvs::run_chuniio_service;
+                    if let Err(e) =
+                        run_chuniio_service(config, feedback_stream, led_packet_rx).await
+                    {
+                        tracing::error!("ChuniIO RGB feedback service error: {}", e);
+                    }
+                });
             }
+        } else {
+            // No chuniio feedback configured - start a dummy service to consume LED packets
+            // This prevents "channel closed" errors in chuniio_proxy
+            tracing::debug!("No ChuniIO feedback configured, starting LED packet drain service");
+            self.service_manager.spawn(async move {
+                let mut led_packet_rx = led_packet_rx;
+                while let Some(_packet) = led_packet_rx.recv().await {
+                    // Discard packets to prevent channel closure
+                }
+            });
         }
     }
 

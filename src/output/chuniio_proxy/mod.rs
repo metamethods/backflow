@@ -368,13 +368,14 @@ impl ChuniioProxyServer {
     }
 
     /// Process input packets from the application and convert to chuniio events
+    #[tracing::instrument(level = "debug", skip_all, fields(events = packet.events.len()), err)]
     async fn process_input_packet(
         &mut self,
         packet: InputEventPacket,
-        input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
+        _input_tx: &mpsc::UnboundedSender<ChuniInputEvent>,
     ) -> eyre::Result<()> {
         trace!(
-            "Processing batch packet with {} events atomically",
+            "Processing batch packet with {} events",
             packet.events.len()
         );
 
@@ -389,7 +390,6 @@ impl ChuniioProxyServer {
                     let pressed =
                         matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
 
-                    // Apply state changes directly without sending individual events
                     if key == "CHUNIIO_COIN" {
                         if pressed {
                             state.coin_counter += 1;
@@ -463,156 +463,6 @@ impl ChuniioProxyServer {
         );
 
         Ok(())
-    }
-
-    /*     /// Process input packet as an atomic batch (for complete state updates from web interface)
-    async fn process_input_packet_batch(&mut self, packet: InputEventPacket) -> eyre::Result<()> {
-        trace!(
-            "Processing batch packet with {} events atomically",
-            packet.events.len()
-        );
-
-        // Extract current state and apply all changes atomically
-        let mut state = self.protocol_state.write().await;
-
-        // Apply all events in the batch
-        for event in &packet.events {
-            match &event {
-                InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
-                | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
-                    let pressed =
-                        matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
-
-                    // Apply state changes directly without sending individual events
-                    if key == "CHUNIIO_COIN" {
-                        if pressed {
-                            state.coin_counter += 1;
-                            trace!("Batch: Coin inserted, counter now: {}", state.coin_counter);
-                        }
-                    } else if key == "CHUNIIO_TEST" {
-                        if pressed {
-                            state.jvs_state.opbtn |= CHUNI_IO_OPBTN_TEST;
-                        } else {
-                            state.jvs_state.opbtn &= !CHUNI_IO_OPBTN_TEST;
-                        }
-                        trace!(
-                            "Batch: Test button {}",
-                            if pressed { "pressed" } else { "released" }
-                        );
-                    } else if key == "CHUNIIO_SERVICE" {
-                        if pressed {
-                            state.jvs_state.opbtn |= CHUNI_IO_OPBTN_SERVICE;
-                        } else {
-                            state.jvs_state.opbtn &= !CHUNI_IO_OPBTN_SERVICE;
-                        }
-                        trace!(
-                            "Batch: Service button {}",
-                            if pressed { "pressed" } else { "released" }
-                        );
-                    } else if let Some(region_str) = key.strip_prefix("CHUNIIO_SLIDER_") {
-                        if let Ok(region) = region_str.parse::<u8>() {
-                            if region < 32 {
-                                let pressure = if pressed { 255 } else { 0 };
-                                state.slider_state.pressure[region as usize] = pressure;
-                                trace!("Batch: Slider region {} pressure {}", region, pressure);
-                            }
-                        }
-                    } else if let Some(beam_str) = key.strip_prefix("CHUNIIO_IR_") {
-                        if let Ok(beam) = beam_str.parse::<u8>() {
-                            if beam < 6 {
-                                if pressed {
-                                    state.jvs_state.beams |= 1 << beam; // Set beam bit when pressed (beam clear)
-                                } else {
-                                    state.jvs_state.beams &= !(1 << beam); // Clear beam bit when released (beam blocked)
-                                }
-                                trace!(
-                                    "Batch: IR beam {} {}",
-                                    beam,
-                                    if pressed { "clear" } else { "blocked" }
-                                );
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    // Ignore non-keyboard events in batch processing
-                }
-            }
-        }
-
-        let active_regions: Vec<usize> = state
-            .slider_state
-            .pressure
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &p)| if p > 0 { Some(i) } else { None })
-            .collect();
-
-        trace!(
-            "Batch processing complete - opbtn: {}, beams: {:#06b}, slider active regions: {} ({:?})",
-            state.jvs_state.opbtn,
-            state.jvs_state.beams,
-            active_regions.len(),
-            active_regions
-        );
-
-        Ok(())
-    } */
-
-    /// Convert keyboard events to chuniio events
-    async fn parse_chuniio_event(&mut self, key: &str, pressed: bool) -> Option<ChuniInputEvent> {
-        // trace!("Parsing event: {} -> {}", key, pressed);
-        let event = if key == "CHUNIIO_COIN" {
-            if pressed {
-                Some(ChuniInputEvent::CoinInsert)
-            } else {
-                None // Coin release is not an event
-            }
-        } else if key == "CHUNIIO_TEST" {
-            Some(ChuniInputEvent::OperatorButton {
-                button: CHUNI_IO_OPBTN_TEST,
-                pressed,
-            })
-        } else if key == "CHUNIIO_SERVICE" {
-            Some(ChuniInputEvent::OperatorButton {
-                button: CHUNI_IO_OPBTN_SERVICE,
-                pressed,
-            })
-        } else if let Some(region_str) = key.strip_prefix("CHUNIIO_SLIDER_") {
-            region_str
-                .parse::<u8>()
-                .ok()
-                .filter(|&region| region < 32)
-                .map(|region| {
-                    let pressure = if pressed { 255 } else { 0 };
-                    trace!(
-                        "Generated slider event: region={}, pressure={}, pressed={}",
-                        region, pressure, pressed
-                    );
-                    ChuniInputEvent::SliderTouch { region, pressure }
-                })
-        } else if let Some(beam_str) = key.strip_prefix("CHUNIIO_IR_") {
-            beam_str
-                .parse::<u8>()
-                .ok()
-                .filter(|&beam| beam < 6)
-                .map(|beam| ChuniInputEvent::IrBeam {
-                    beam,
-                    broken: pressed,
-                })
-        } else {
-            warn!("Received non-CHUNIIO key in chuniio backend: {}", key);
-            None
-        };
-
-        if let Some(ref _evt) = event {
-            // trace!("Generated chuniio event: {:?}", evt);
-        } else if !key.starts_with("CHUNIIO_") {
-            // Only warn if it's not a CHUNIIO key, to avoid noise from coin release etc.
-            warn!("No chuniio event generated for key: {}", key);
-        }
-
-        event
     }
 }
 
@@ -647,6 +497,7 @@ impl InternalChuniioProxyServer {
     }
 
     /// Start the internal server
+    #[tracing::instrument(level = "info", skip_all, err)]
     async fn start_server(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Remove existing socket file if it exists
         if self.socket_path.exists() {
@@ -709,6 +560,7 @@ impl InternalChuniioProxyServer {
     }
 
     /// Handle a single client connection with bidirectional communication
+    #[tracing::instrument(level = "debug", skip_all, fields(client_id), err)]
     async fn handle_client(
         client_id: u64,
         stream: UnixStream,
@@ -818,6 +670,8 @@ impl InternalChuniioProxyServer {
     }
 
     /// Handle a message from a client and optionally return a response
+    #[tracing::instrument(level = "debug", skip_all, fields(client_id), err)]
+    #[tracing::instrument(level = "debug", skip_all, fields(client_id, ?message), err)]
     async fn handle_client_message(
         client_id: u64,
         message: ChuniMessage,

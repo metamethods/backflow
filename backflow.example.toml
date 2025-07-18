@@ -15,12 +15,18 @@ host = "0.0.0.0"
 [output.uinput]
 enabled = true
 
+# === ChuniIO RGB Feedback Configuration ===
+# This section is now enabled by default when chuniio_proxy is enabled.
+# You can customize the behavior by adding this section, or omit it entirely
+# to use the defaults with chuniio_proxy LED data.
+
 # For passing through the LED data from segatools to Backflow, from a Wineprefix,
 # Add this to your launch script:
 # start "Outflow IPC Proxy" outflow.exe --outbound-pipe -p "\\.\pipe\chuni_led" -s "/tmp/chuniio_rgb.sock"
 # replace `outflow.exe` with the path to your Outflow IPC Proxy executable.
 [feedback.chuniio]
-socket_path = "/tmp/chuniio_rgb.sock"
+socket_path = "/tmp/chuniio_rgb.sock"  # Optional: path to RGB data socket from segatools
+                                       # If omitted, will use LED data from chuniio_proxy directly
 # Clamping will automatically skip every other LED from the output stream,
 # as they are meant for lighting up the dividers between each zone, not the zones themselves.
 # If you want to use the full 31 LEDs, set this to 31 or remove/comment out this line.
@@ -28,3 +34,10 @@ slider_clamp_lights = 16              # Clamp to 16 zones instead of 31 LEDs
 # This is the offset for the LED IDs.
 # If you have multiple devices, you can set this to a higher number to avoid ID conflicts
 slider_id_offset = 0                  # Start LED IDs from 0
+
+# === Alternative: Simple ChuniIO feedback without external socket ===
+# If you want LED feedback from chuniio_proxy without an external socket:
+# [feedback.chuniio]
+# # No socket_path specified - will use chuniio_proxy LED data directly
+# slider_clamp_lights = 16
+# slider_id_offset = 0
