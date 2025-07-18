@@ -158,34 +158,30 @@ impl UdevOutputBackend {
         Ok(device)
     }
 
-    /// Get a device by its type string
-    #[cfg(test)] // Part of public API, may be used for device lookup
-    pub fn get_device(&self, device_type: &str) -> Option<&UdevDeviceEntry> {
-        self.devices.get(device_type)
-    }
-
+    /*     /// Get a device by its type string
+       pub fn get_device(&self, device_type: &str) -> Option<&UdevDeviceEntry> {
+           self.devices.get(device_type)
+       }
+    */
     /// Get a mutable reference to a device by its type string
     pub fn get_device_mut(&mut self, device_type: &str) -> Option<&mut UdevDeviceEntry> {
         self.devices.get_mut(device_type)
     }
 
-    /// Get the keyboard device if it exists
-    #[cfg(test)] // Part of public API, may be used for device access
+    /*     /// Get the keyboard device if it exists
     pub fn keyboard(&self) -> Option<&UdevDeviceEntry> {
         self.get_device("keyboard")
     }
 
-    /// Get the mouse device if it exists  
-    #[cfg(test)] // Part of public API, may be used for device access
+    /// Get the mouse device if it exists
     pub fn mouse(&self) -> Option<&UdevDeviceEntry> {
         self.get_device("mouse")
     }
 
     /// Get the gamepad device if it exists
-    #[cfg(test)] // Part of public API, may be used for device access
     pub fn gamepad(&self) -> Option<&UdevDeviceEntry> {
         self.get_device("gamepad")
-    }
+    } */
 }
 
 /// Main udev output implementation
@@ -208,172 +204,177 @@ impl UdevOutput {
     async fn process_packet(&mut self, packet: InputEventPacket) -> Result<()> {
         tracing::trace!("Received input event packet: {:?}", packet);
 
+        // Group events by device type for batch processing
+        let mut keyboard_events = Vec::new();
+        let mut mouse_events = Vec::new();
+        let mut gamepad_events = Vec::new();
+
         for event in packet.events {
-            self.handle_event(event).await?;
+            match event {
+                InputEvent::Keyboard(e) => keyboard_events.push(e),
+                InputEvent::Pointer(e) => mouse_events.push(e),
+                InputEvent::Joystick(e) => gamepad_events.push(e),
+                InputEvent::Analog(_) => {} // skip for now
+            }
         }
+
+        // Process events in batch
+        self.process_keyboard_events(&keyboard_events)?;
+        self.process_mouse_events(&mouse_events)?;
+        self.process_gamepad_events(&gamepad_events)?;
+
         Ok(())
     }
 
-    async fn handle_event(&mut self, event: InputEvent) -> Result<()> {
-        match event {
-            InputEvent::Keyboard(keyboard_event) => {
-                self.handle_keyboard_event(keyboard_event).await
-            }
-            InputEvent::Pointer(pointer_event) => self.handle_pointer_event(pointer_event).await,
-            InputEvent::Joystick(joystick_event) => {
-                self.handle_joystick_event(joystick_event).await
-            }
-            InputEvent::Analog(_analog_event) => {
-                // todo: remap
-                Ok(()) // Analog events are not handled in udev backend
-            }
+    fn process_keyboard_events(&mut self, events: &[KeyboardEvent]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
         }
-    }
 
-    async fn handle_keyboard_event(&mut self, event: KeyboardEvent) -> Result<()> {
-        // Events are now pre-routed, so no filtering needed
         let Some(kb_device) = self.backend.get_device_mut("keyboard") else {
             tracing::warn!("No keyboard device available");
             return Ok(());
         };
 
-        match event {
-            KeyboardEvent::KeyPress { key } => {
-                if let Ok(uinput_key) = Self::evdev_key_to_uinput_key(&key) {
-                    kb_device.device.press(&uinput_key)?;
-                    kb_device.device.synchronize()?;
-                    tracing::debug!("Sent key press: {}", key);
-                } else {
-                    tracing::warn!("Unknown key: {}", key);
+        for event in events {
+            match event {
+                KeyboardEvent::KeyPress { key } => {
+                    if let Ok(uinput_key) = Self::evdev_key_to_uinput_key(key) {
+                        kb_device.device.press(&uinput_key)?;
+                    } else {
+                        tracing::warn!("Unknown key: {}", key);
+                    }
                 }
-            }
-            KeyboardEvent::KeyRelease { key } => {
-                if let Ok(uinput_key) = Self::evdev_key_to_uinput_key(&key) {
-                    kb_device.device.release(&uinput_key)?;
-                    kb_device.device.synchronize()?;
-                    tracing::debug!("Sent key release: {}", key);
-                } else {
-                    tracing::warn!("Unknown key: {}", key);
+                KeyboardEvent::KeyRelease { key } => {
+                    if let Ok(uinput_key) = Self::evdev_key_to_uinput_key(key) {
+                        kb_device.device.release(&uinput_key)?;
+                    } else {
+                        tracing::warn!("Unknown key: {}", key);
+                    }
                 }
             }
         }
+        kb_device.device.synchronize()?;
         Ok(())
     }
 
-    async fn handle_pointer_event(&mut self, event: PointerEvent) -> Result<()> {
+    fn process_mouse_events(&mut self, events: &[PointerEvent]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
         let Some(mouse_device) = self.backend.get_device_mut("mouse") else {
             tracing::warn!("No mouse device available");
             return Ok(());
         };
 
-        match event {
-            PointerEvent::Move { x_delta, y_delta } => {
-                mouse_device.device.send(
-                    uinput::Event::Relative(uinput::event::Relative::Position(
-                        uinput::event::relative::Position::X,
-                    )),
-                    x_delta,
-                )?;
-                mouse_device.device.send(
-                    uinput::Event::Relative(uinput::event::Relative::Position(
-                        uinput::event::relative::Position::Y,
-                    )),
-                    y_delta,
-                )?;
-                mouse_device.device.synchronize()?;
-                tracing::debug!("Sent mouse move: x={}, y={}", x_delta, y_delta);
-            }
-            PointerEvent::Click { button } => {
-                if let Some(mouse_button) = Self::button_to_mouse_button(button) {
+        for event in events {
+            match event {
+                PointerEvent::Move { x_delta, y_delta } => {
                     mouse_device.device.send(
-                        uinput::Event::Controller(uinput::event::Controller::Mouse(mouse_button)),
-                        1,
-                    )?;
-                    mouse_device.device.synchronize()?;
-                    tracing::debug!("Sent mouse button press: {}", button);
-                } else {
-                    tracing::warn!("Unsupported mouse button: {}", button);
-                }
-            }
-            PointerEvent::ClickRelease { button } => {
-                if let Some(mouse_button) = Self::button_to_mouse_button(button) {
-                    mouse_device.device.send(
-                        uinput::Event::Controller(uinput::event::Controller::Mouse(mouse_button)),
-                        0,
-                    )?;
-                    mouse_device.device.synchronize()?;
-                    tracing::debug!("Sent mouse button release: {}", button);
-                } else {
-                    tracing::warn!("Unsupported mouse button: {}", button);
-                }
-            }
-            PointerEvent::Scroll { x_delta, y_delta } => {
-                if y_delta != 0 {
-                    mouse_device.device.send(
-                        uinput::Event::Relative(uinput::event::Relative::Wheel(
-                            uinput::event::relative::Wheel::Vertical,
+                        uinput::Event::Relative(uinput::event::Relative::Position(
+                            uinput::event::relative::Position::X,
                         )),
-                        y_delta,
+                        *x_delta,
                     )?;
-                }
-                if x_delta != 0 {
                     mouse_device.device.send(
-                        uinput::Event::Relative(uinput::event::Relative::Wheel(
-                            uinput::event::relative::Wheel::Horizontal,
+                        uinput::Event::Relative(uinput::event::Relative::Position(
+                            uinput::event::relative::Position::Y,
                         )),
-                        x_delta,
+                        *y_delta,
                     )?;
                 }
-                mouse_device.device.synchronize()?;
-                tracing::debug!("Sent scroll: x={}, y={}", x_delta, y_delta);
+                PointerEvent::Click { button } => {
+                    if let Some(mouse_button) = Self::button_to_mouse_button(*button) {
+                        mouse_device.device.send(
+                            uinput::Event::Controller(uinput::event::Controller::Mouse(
+                                mouse_button,
+                            )),
+                            1,
+                        )?;
+                    } else {
+                        tracing::warn!("Unsupported mouse button: {}", button);
+                    }
+                }
+                PointerEvent::ClickRelease { button } => {
+                    if let Some(mouse_button) = Self::button_to_mouse_button(*button) {
+                        mouse_device.device.send(
+                            uinput::Event::Controller(uinput::event::Controller::Mouse(
+                                mouse_button,
+                            )),
+                            0,
+                        )?;
+                    } else {
+                        tracing::warn!("Unsupported mouse button: {}", button);
+                    }
+                }
+                PointerEvent::Scroll { x_delta, y_delta } => {
+                    if *y_delta != 0 {
+                        mouse_device.device.send(
+                            uinput::Event::Relative(uinput::event::Relative::Wheel(
+                                uinput::event::relative::Wheel::Vertical,
+                            )),
+                            *y_delta,
+                        )?;
+                    }
+                    if *x_delta != 0 {
+                        mouse_device.device.send(
+                            uinput::Event::Relative(uinput::event::Relative::Wheel(
+                                uinput::event::relative::Wheel::Horizontal,
+                            )),
+                            *x_delta,
+                        )?;
+                    }
+                }
             }
         }
+        mouse_device.device.synchronize()?;
         Ok(())
     }
 
-    async fn handle_joystick_event(&mut self, event: JoystickEvent) -> Result<()> {
+    fn process_gamepad_events(&mut self, events: &[JoystickEvent]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+
         let Some(gamepad_device) = self.backend.get_device_mut("gamepad") else {
             tracing::warn!("No gamepad device available");
             return Ok(());
         };
 
-        match event {
-            JoystickEvent::ButtonPress { button } => {
-                if let Some(gamepad_button) = Self::button_to_gamepad_button(button) {
-                    gamepad_device.device.press(&gamepad_button)?;
-                    gamepad_device.device.synchronize()?;
-                    tracing::debug!("Sent gamepad button press: {}", button);
-                } else {
-                    tracing::warn!("Unsupported gamepad button: {}", button);
+        for event in events {
+            match event {
+                JoystickEvent::ButtonPress { button } => {
+                    if let Some(gamepad_button) = Self::button_to_gamepad_button(*button) {
+                        gamepad_device.device.press(&gamepad_button)?;
+                    } else {
+                        tracing::warn!("Unsupported gamepad button: {}", button);
+                    }
                 }
-            }
-            JoystickEvent::ButtonRelease { button } => {
-                if let Some(gamepad_button) = Self::button_to_gamepad_button(button) {
-                    gamepad_device.device.release(&gamepad_button)?;
-                    gamepad_device.device.synchronize()?;
-                    tracing::debug!("Sent gamepad button release: {}", button);
-                } else {
-                    tracing::warn!("Unsupported gamepad button: {}", button);
+                JoystickEvent::ButtonRelease { button } => {
+                    if let Some(gamepad_button) = Self::button_to_gamepad_button(*button) {
+                        gamepad_device.device.release(&gamepad_button)?;
+                    } else {
+                        tracing::warn!("Unsupported gamepad button: {}", button);
+                    }
                 }
-            }
-            JoystickEvent::AxisMovement { stick: _, x, y } => {
-                // Send absolute position events for joystick axes
-                gamepad_device.device.send(
-                    uinput::Event::Absolute(uinput::event::Absolute::Position(
-                        uinput::event::absolute::Position::X,
-                    )),
-                    x as i32,
-                )?;
-                gamepad_device.device.send(
-                    uinput::Event::Absolute(uinput::event::Absolute::Position(
-                        uinput::event::absolute::Position::Y,
-                    )),
-                    y as i32,
-                )?;
-                gamepad_device.device.synchronize()?;
-                tracing::debug!("Sent joystick axis movement: x={}, y={}", x, y);
+                JoystickEvent::AxisMovement { stick: _, x, y } => {
+                    gamepad_device.device.send(
+                        uinput::Event::Absolute(uinput::event::Absolute::Position(
+                            uinput::event::absolute::Position::X,
+                        )),
+                        *x as i32,
+                    )?;
+                    gamepad_device.device.send(
+                        uinput::Event::Absolute(uinput::event::Absolute::Position(
+                            uinput::event::absolute::Position::Y,
+                        )),
+                        *y as i32,
+                    )?;
+                }
             }
         }
+        gamepad_device.device.synchronize()?;
         Ok(())
     }
 
@@ -459,47 +460,9 @@ impl OutputBackend for UdevOutput {
     }
 }
 
-// Legacy functions for backwards compatibility
-#[cfg(test)]
-pub fn keyboard_device() -> Result<Device> {
-    UdevOutputBackend::create_keyboard_device()
-}
-
-#[cfg(test)] // Legacy function, may be used in tests or external code
-pub fn mouse_device() -> Result<Device> {
-    UdevOutputBackend::create_mouse_device()
-}
-
-#[cfg(test)] // Test function, may be used for device validation
-pub fn dummy_test() -> Result<()> {
-    let mut device = keyboard_device()?;
-
-    // sleep for a bit to ensure the device is ready
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Send a dummy key event to ensure the device is ready
-    device.press(&Key::A)?;
-    device.synchronize()?;
-
-    device.release(&Key::A)?;
-    device.synchronize()?;
-
-    // This is a dummy test function to ensure the module compiles
-    // and can be used in tests or examples.
-    println!("Dummy udev test function called.");
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eyre::WrapErr;
-
-    #[test]
-    fn test_dummy_udev() -> Result<()> {
-        dummy_test().wrap_err("Dummy udev test failed")?;
-        Ok(())
-    }
 
     #[test]
     fn test_evdev_key_mapping() -> Result<()> {

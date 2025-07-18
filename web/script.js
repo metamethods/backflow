@@ -163,6 +163,14 @@ class WebSocketHandler {
   }
 
   getDeviceNameForCell(cell) {
+    // Check for data-name attribute on the grid container first
+    const gridContainer = cell.closest("[data-name]");
+    if (gridContainer) {
+      const containerName = gridContainer.getAttribute("data-name");
+      return containerName;
+    }
+
+    // Fall back to section-based naming
     const container = cell.closest("[data-cell-section]");
     if (container) {
       const section = container.getAttribute("data-cell-section");
@@ -319,7 +327,10 @@ class GridController {
 
       const newKeyStates = new Array(this.keyStates.length).fill(0);
       const currentTouchIds = new Set();
+      // Track previous cell per touchId
+      if (!this.touchToCell) this.touchToCell = new Map();
 
+      // First pass: handle cell changes and releases
       for (let i = 0; i < e.touches.length; i++) {
         const touch = e.touches[i];
         const touchId = touch.identifier;
@@ -328,6 +339,7 @@ class GridController {
         currentTouchIds.add(touchId);
 
         let targetCell = this.getCell(x, y);
+        let prevCell = this.touchToCell.get(touchId) || null;
 
         // If this touch is already locked to a cell and slider is disabled, keep using the locked cell
         if (this.activeTouches.has(touchId)) {
@@ -345,18 +357,41 @@ class GridController {
           this.activeTouches.set(touchId, targetCell);
         }
 
-        if (!targetCell) continue;
+        // Handle cell transitions - ensure previous cell is properly released
+        if (prevCell && (!targetCell || prevCell.index !== targetCell.index)) {
+          // Force release of previous cell in current state
+          newKeyStates[prevCell.index] = 0;
+          console.log(`Touch ${touchId}: releasing previous cell ${prevCell.index} (${prevCell.ref?.getAttribute('data-key')})`);
+        }
 
-        this.setKey(newKeyStates, targetCell.index);
+        // Update tracking for this touch
+        if (targetCell) {
+          this.touchToCell.set(touchId, targetCell);
+        } else if (prevCell) {
+          // Touch moved outside all cells - remove tracking
+          this.touchToCell.delete(touchId);
+        }
+      }
 
-        // Only allow sliding if sliderEnabled is true for this cell
-        if (targetCell.sliderEnabled && !targetCell.isAirSensor) {
-          if (x < targetCell.almostLeft && targetCell.prevIndex !== null) {
-            this.setKey(newKeyStates, targetCell.prevIndex);
-          }
+      // Second pass: set active cells
+      for (let i = 0; i < e.touches.length; i++) {
+        const touch = e.touches[i];
+        const touchId = touch.identifier;
+        const targetCell = this.touchToCell.get(touchId);
 
-          if (x > targetCell.almostRight && targetCell.nextIndex !== null) {
-            this.setKey(newKeyStates, targetCell.nextIndex);
+        if (targetCell) {
+          this.setKey(newKeyStates, targetCell.index, 1);
+
+          // Only allow sliding if sliderEnabled is true for this cell
+          if (targetCell.sliderEnabled && !targetCell.isAirSensor) {
+            const x = touch.clientX;
+            if (x < targetCell.almostLeft && targetCell.prevIndex !== null) {
+              this.setKey(newKeyStates, targetCell.prevIndex, 1);
+            }
+
+            if (x > targetCell.almostRight && targetCell.nextIndex !== null) {
+              this.setKey(newKeyStates, targetCell.nextIndex, 1);
+            }
           }
         }
       }
@@ -364,6 +399,13 @@ class GridController {
       // Clean up touches that are no longer active
       for (const touchId of this.activeTouches.keys()) {
         if (!currentTouchIds.has(touchId)) {
+          // Release the cell for this touch
+          const prevCell = this.touchToCell && this.touchToCell.get(touchId);
+          if (prevCell) {
+            newKeyStates[prevCell.index] = 0;
+            this.touchToCell.delete(touchId);
+            console.log(`Touch ${touchId}: ended, releasing cell ${prevCell.index} (${prevCell.ref?.getAttribute('data-key')})`);
+          }
           this.activeTouches.delete(touchId);
         }
       }

@@ -71,6 +71,29 @@ The main components are:
 - **UNIX Socket Backend**: Provides a Unix socket interface for local applications to connect and receive input events. (`unix_socket/mod.rs`)
 - **Input Transform Layer**: Transforms input events from various backends into a common format. (`device_filter.rs`)
 
+## Quirks
+
+### Cross-Device Event Atomicity
+
+When implementing web-based controllers that span multiple logical devices (e.g., touchpads + motion sensors, or sliders + buttons), be careful about event atomicity. If different UI sections use different `data-cell-section` values, they will be treated as separate devices and their events will be sent in separate WebSocket packets.
+
+This can cause issues when a user gesture spans multiple sections - for example, sliding from one input zone to another. The release event from the first zone and the press event in the second zone may be processed non-atomically, potentially causing "stuck keys" where the release gets lost.
+
+**Solutions:**
+
+1. **Unified Device Naming (Recommended)**: Use `data-name="device-name"` on the grid container to override all child section naming:
+
+   ```html
+   <div class="grid-container" data-name="unified">
+     <div data-cell-section="touchpad">...</div>
+     <div data-cell-section="motion-sensors">...</div>
+   </div>
+   ```
+
+2. **Cross-Device Detection**: Implement logic to detect when events span multiple devices and send them in a combined packet (more complex).
+
+The `data-name` attribute takes precedence over `data-cell-section` and ensures all events from that container are sent to the same device ID, preserving atomicity for cross-section gestures.
+
 ## Getting Started
 
 1. Clone the repository:
