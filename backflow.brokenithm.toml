@@ -1,0 +1,31 @@
+# Plumbershim Configuration Example
+
+[input.web]
+enabled = true
+port = 8000
+host = "0.0.0.0"
+[input.unix]
+
+[input.brokenithm]
+enabled = true
+port = 24864
+host = "0.0.0.0"
+
+[input.brokenithm.idevice]
+enabled = true
+device_port = 24864
+local_port = 24864
+# udid = "YOUR_DEVICE_UDID_HERE" # Optional, remove or set to null for default device
+
+# http://localhost:8000/templates/chuni.html
+[output.uinput]
+enabled = true
+
+[output.chuniio_proxy]
+enabled = true
+socket_path = "/tmp/chuniio_proxy.sock"
+
+[feedback.chuniio]
+socket_path = "/tmp/chuniio_rgb.sock"
+slider_clamp_lights = 16              # Clamp to 16 zones instead of 31 LEDs
+slider_id_offset = 0                  # Start LED IDs from 0
