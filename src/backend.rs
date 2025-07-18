@@ -434,12 +434,21 @@ impl Backend {
 
         if should_enable_chuniio_feedback {
             // Use configured chuniio config or create default one
-            let chuniio_config = if let Some(config) = &self.config.feedback.chuniio {
+            let mut chuniio_config = if let Some(config) = &self.config.feedback.chuniio {
                 config.clone()
             } else {
                 // Create default config for chuniio_proxy-only feedback
                 crate::config::ChuniIoRgbConfig::default()
             };
+
+            // If chuniio_proxy is enabled, forcibly disable the feedback socket_path and warn
+            if chuniio_proxy_enabled && chuniio_config.socket_path.is_some() {
+                tracing::warn!(
+                    "ChuniIO feedback socket_path ({:?}) is ignored because chuniio_proxy is enabled. Feedback will be fed from chuniio_proxy only.",
+                    chuniio_config.socket_path
+                );
+                chuniio_config.socket_path = None;
+            }
 
             if let Some(socket_path) = &chuniio_config.socket_path {
                 tracing::info!(
