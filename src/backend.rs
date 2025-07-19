@@ -187,6 +187,7 @@ impl Backend {
                 let connect_addr_str =
                     format!("{}:{}", brokenithm_config.host, brokenithm_config.port);
                 let input_stream = self.streams.raw_input.clone();
+                let feedback_stream = self.streams.feedback.clone();
                 self.service_manager.spawn(async move {
                     match connect_addr_str.parse::<SocketAddr>() {
                         Ok(connect_addr) => {
@@ -196,6 +197,7 @@ impl Backend {
                             let mut backend = BrokenithmTcpBackend::new(
                                 BrokenithmTcpConfig::Client { connect_addr },
                                 input_stream,
+                                feedback_stream,
                             );
                             if let Err(e) = backend.run().await {
                                 tracing::error!("Brokenithm TCP client backend error: {}", e);
@@ -217,6 +219,7 @@ impl Backend {
                             idevice_config.udid
                         );
                         let input_stream = self.streams.raw_input.clone();
+                        let feedback_stream = self.streams.feedback.clone();
                         let local_port = idevice_config.local_port;
                         let device_port = idevice_config.device_port;
                         let udid = idevice_config.udid.clone();
@@ -231,6 +234,7 @@ impl Backend {
                                     udid,
                                 },
                                 input_stream,
+                                feedback_stream,
                             );
                             if let Err(e) = backend.run().await {
                                 tracing::error!("Brokenithm iDevice client backend error: {}", e);

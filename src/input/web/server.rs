@@ -342,7 +342,8 @@ impl InputBackend for WebServer {
                 result.context("Server error")?;
             }
             _ = feedback_task => {
-                warn!("Feedback broadcast task ended unexpectedly");
+                info!("Feedback broadcast task ended (feedback stream closed)");
+                // This is not necessarily unexpected - could be normal shutdown
             }
         }
 
@@ -867,12 +868,6 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
 
                             // Check timestamp ordering to prevent out-of-order packets
                             if state.should_process_packet(&packet).await {
-                                // debug!(
-                                //     "Forwarding input event packet from {} to main input stream: device_id={}, events={}",
-                                //     addr,
-                                //     packet.device_id,
-                                //     packet.events.len()
-                                // );
                                 if let Err(e) = input_stream.send(packet).await {
                                     error!("Failed to send input event to stream: {}", e);
                                 } else {
@@ -892,11 +887,10 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
                         else if let Ok(feedback_packet) =
                             serde_json::from_str::<FeedbackEventPacket>(&text)
                         {
-                            info!(
-                                "Received feedback packet from {} for broadcasting: device_id={}, events={}",
-                                addr,
+                            trace!(
                                 feedback_packet.device_id,
-                                feedback_packet.events.len()
+                                feedback_packet_events_count = feedback_packet.events.len(),
+                                "Received feedback packet from {addr} for broadcasting",
                             );
 
                             // Instead of broadcasting directly here, send it through the main feedback stream
