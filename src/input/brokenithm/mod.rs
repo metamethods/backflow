@@ -5,7 +5,7 @@
 //! This module provides a TCP server/client that connects to Brokenithm clients,
 //! allowing them to send input events and receive updates.
 
-use crate::feedback::{FeedbackEvent, FeedbackEventPacket, LedEvent};
+use crate::feedback::{FeedbackEvent, FeedbackEventPacket, FeedbackEventStream, LedEvent};
 use crate::input::{InputBackend, InputEvent, InputEventPacket, InputEventStream, KeyboardEvent};
 use crate::output::rgb_to_brg;
 use std::net::SocketAddr;
@@ -86,6 +86,7 @@ pub async fn set_brokenithm_state(new_state: BrokenithmInputState) {
 pub struct BrokenithmTcpBackend {
     pub config: BrokenithmTcpConfig,
     pub input_stream: InputEventStream,
+    pub feedback_stream: FeedbackEventStream,
 }
 
 #[derive(Debug, Clone)]
@@ -103,19 +104,40 @@ pub enum BrokenithmTcpConfig {
 }
 
 impl BrokenithmTcpBackend {
-    pub fn new(config: BrokenithmTcpConfig, input_stream: InputEventStream) -> Self {
+    pub fn new(
+        config: BrokenithmTcpConfig,
+        input_stream: InputEventStream,
+        feedback_stream: FeedbackEventStream,
+    ) -> Self {
         Self {
             config,
             input_stream,
+            feedback_stream,
         }
     }
 
-    pub fn server(bind_addr: SocketAddr, input_stream: InputEventStream) -> Self {
-        Self::new(BrokenithmTcpConfig::Server { bind_addr }, input_stream)
+    pub fn server(
+        bind_addr: SocketAddr,
+        input_stream: InputEventStream,
+        feedback_stream: FeedbackEventStream,
+    ) -> Self {
+        Self::new(
+            BrokenithmTcpConfig::Server { bind_addr },
+            input_stream,
+            feedback_stream,
+        )
     }
 
-    pub fn client(connect_addr: SocketAddr, input_stream: InputEventStream) -> Self {
-        Self::new(BrokenithmTcpConfig::Client { connect_addr }, input_stream)
+    pub fn client(
+        connect_addr: SocketAddr,
+        input_stream: InputEventStream,
+        feedback_stream: FeedbackEventStream,
+    ) -> Self {
+        Self::new(
+            BrokenithmTcpConfig::Client { connect_addr },
+            input_stream,
+            feedback_stream,
+        )
     }
 
     pub fn device_proxy(
@@ -123,6 +145,7 @@ impl BrokenithmTcpBackend {
         device_port: u16,
         udid: Option<String>,
         input_stream: InputEventStream,
+        feedback_stream: FeedbackEventStream,
     ) -> Self {
         Self::new(
             BrokenithmTcpConfig::DeviceProxy {
@@ -131,6 +154,7 @@ impl BrokenithmTcpBackend {
                 udid,
             },
             input_stream,
+            feedback_stream,
         )
     }
 }
@@ -182,7 +206,10 @@ impl InputBackend for BrokenithmTcpBackend {
 
         match self.config.clone() {
             BrokenithmTcpConfig::Server { bind_addr } => self.run_server(bind_addr).await,
-            BrokenithmTcpConfig::Client { connect_addr } => self.run_client(connect_addr).await,
+            BrokenithmTcpConfig::Client { connect_addr } => {
+                self.run_client(connect_addr, self.feedback_stream.clone())
+                    .await
+            }
             BrokenithmTcpConfig::DeviceProxy {
                 local_port,
                 device_port,
@@ -203,7 +230,7 @@ impl BrokenithmTcpBackend {
         // Shared client list for feedback broadcast
         let clients: Arc<RwLock<Vec<Arc<tokio::sync::Mutex<tokio::net::TcpStream>>>>> =
             Arc::new(RwLock::new(Vec::new()));
-        let feedback_stream = crate::feedback::FeedbackEventStream::default();
+        let feedback_stream = self.feedback_stream.clone();
         let feedback_stream_clone = feedback_stream.clone();
         let clients_clone = clients.clone();
 
@@ -250,25 +277,31 @@ impl BrokenithmTcpBackend {
 
             let clients_for_removal = clients.clone();
             let client_mutex_for_removal = client_mutex.clone();
+            let feedback_stream_clone = feedback_stream.clone();
 
             tokio::spawn(async move {
                 Self::handle_connection(
                     client_mutex,
                     Some((clients_for_removal, client_mutex_for_removal)),
                     Some(addr),
+                    feedback_stream_clone,
                 )
                 .await;
             });
         }
     }
 
-    async fn run_client(&mut self, connect_addr: SocketAddr) -> eyre::Result<()> {
+    async fn run_client(
+        &mut self,
+        connect_addr: SocketAddr,
+        feedback_stream: FeedbackEventStream,
+    ) -> eyre::Result<()> {
         loop {
             match TcpStream::connect(connect_addr).await {
                 Ok(socket) => {
                     tracing::info!("Connected to Brokenithm device at {}", connect_addr);
                     let socket = Arc::new(tokio::sync::Mutex::new(socket));
-                    Self::handle_connection(socket, None, None).await;
+                    Self::handle_connection(socket, None, None, feedback_stream.clone()).await;
                 }
                 Err(e) => {
                     tracing::error!(
@@ -306,7 +339,7 @@ impl BrokenithmTcpBackend {
                         connect_addr
                     );
                     let socket = Arc::new(tokio::sync::Mutex::new(socket));
-                    Self::handle_connection(socket, None, None).await;
+                    Self::handle_connection(socket, None, None, self.feedback_stream.clone()).await;
                 }
                 Err(e) => {
                     tracing::error!(
@@ -327,11 +360,11 @@ impl BrokenithmTcpBackend {
             Arc<tokio::sync::Mutex<tokio::net::TcpStream>>,
         )>,
         addr: Option<SocketAddr>,
+        feedback_stream: FeedbackEventStream,
     ) {
         let socket_for_feedback = socket.clone();
 
         // Start feedback listening task
-        let feedback_stream = crate::feedback::FeedbackEventStream::default();
         let feedback_stream_clone = feedback_stream.clone();
         let feedback_task = tokio::spawn(async move {
             loop {

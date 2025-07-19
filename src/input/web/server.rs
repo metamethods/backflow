@@ -342,7 +342,8 @@ impl InputBackend for WebServer {
                 result.context("Server error")?;
             }
             _ = feedback_task => {
-                warn!("Feedback broadcast task ended unexpectedly");
+                info!("Feedback broadcast task ended (feedback stream closed)");
+                // This is not necessarily unexpected - could be normal shutdown
             }
         }
 
