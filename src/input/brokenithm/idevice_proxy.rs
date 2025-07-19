@@ -1,5 +1,6 @@
 //! Utility for forwarding a TCP port from an iOS device to localhost using libimobiledevice (idevice crate)
 
+use nix::libc;
 use std::process::Stdio;
 use tokio::process::Command;
 
@@ -16,5 +17,17 @@ pub async fn spawn_iproxy(
         cmd.arg("--udid").arg(udid);
     }
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
-    cmd.spawn()
+    match cmd.spawn() {
+        Ok(child) => Ok(child),
+        Err(e) => {
+            if let Some(raw_os_error) = e.raw_os_error() {
+                if raw_os_error == libc::ENOENT {
+                    tracing::error!(
+                        "Failed to spawn 'iproxy': command not found. Is usbmuxd-utils installed?"
+                    );
+                }
+            }
+            Err(e)
+        }
+    }
 }
