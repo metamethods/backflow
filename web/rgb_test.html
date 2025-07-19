@@ -122,7 +122,7 @@
 </head>
 <body>
     <h1>RGB LED Test Controller</h1>
-    <p></p><strong>New LED Mapping:</strong> Keys (even 0-30), Separators (odd 1-29), Sensors (32-37)</p>
+    <p><strong>New LED Mapping:</strong> Keys (even 0-30), Border Lines (odd 1-29), Sensors (32-37)</p>
     
     <div class="status" id="status">
         <span id="statusText">Connecting...</span>
@@ -154,23 +154,24 @@
         </div>
         
         <div>
-            <strong>Separators (LED IDs 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29):</strong>
+            <strong>Border Lines (LED IDs 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29):</strong>
+            <p><em>These IDs add colored lines to the borders between keys, not separate elements.</em></p>
             <div class="led-grid" style="grid-template-columns: repeat(8, 1fr);">
-                <div class="led-item separator">1: Sep</div>
-                <div class="led-item separator">3: Sep</div>
-                <div class="led-item separator">5: Sep</div>
-                <div class="led-item separator">7: Sep</div>
-                <div class="led-item separator">9: Sep</div>
-                <div class="led-item separator">11: Sep</div>
-                <div class="led-item separator">13: Sep</div>
-                <div class="led-item separator">15: Sep</div>
-                <div class="led-item separator">17: Sep</div>
-                <div class="led-item separator">19: Sep</div>
-                <div class="led-item separator">21: Sep</div>
-                <div class="led-item separator">23: Sep</div>
-                <div class="led-item separator">25: Sep</div>
-                <div class="led-item separator">27: Sep</div>
-                <div class="led-item separator">29: Sep</div>
+                <div class="led-item separator">1: Between Key 0&2</div>
+                <div class="led-item separator">3: Between Key 2&4</div>
+                <div class="led-item separator">5: Between Key 4&6</div>
+                <div class="led-item separator">7: Between Key 6&8</div>
+                <div class="led-item separator">9: Between Key 8&10</div>
+                <div class="led-item separator">11: Between Key 10&12</div>
+                <div class="led-item separator">13: Between Key 12&14</div>
+                <div class="led-item separator">15: Between Key 14&16</div>
+                <div class="led-item separator">17: Between Key 16&18</div>
+                <div class="led-item separator">19: Between Key 18&20</div>
+                <div class="led-item separator">21: Between Key 20&22</div>
+                <div class="led-item separator">23: Between Key 22&24</div>
+                <div class="led-item separator">25: Between Key 24&26</div>
+                <div class="led-item separator">27: Between Key 26&28</div>
+                <div class="led-item separator">29: Between Key 28&30</div>
             </div>
         </div>
         
@@ -212,22 +213,26 @@
                     <option value="28">28: Key 14</option>
                     <option value="30">30: Key 15</option>
                 </optgroup>
-                <optgroup label="Separators (Odd 1-29)">
-                    <option value="1">1: Separator</option>
-                    <option value="3">3: Separator</option>
-                    <option value="5">5: Separator</option>
-                    <option value="7">7: Separator</option>
-                    <option value="9">9: Separator</option>
-                    <option value="11">11: Separator</option>
-                    <option value="13">13: Separator</option>
-                    <option value="15">15: Separator</option>
-                    <option value="17">17: Separator</option>
-                    <option value="19">19: Separator</option>
-                    <option value="21">21: Separator</option>
-                    <option value="23">23: Separator</option>
-                    <option value="25">25: Separator</option>
-                    <option value="27">27: Separator</option>
-                    <option value="29">29: Separator</option>
+                <optgroup label="Border Lines (Odd 1-29)">
+</optgroup>
+
+<old_text>
+            <button onclick="sendToAllSeparators()">All Border Lines (Odd 1-29)</button>
+                    <option value="1">1: Between Keys 0&2</option>
+                    <option value="3">3: Between Keys 2&4</option>
+                    <option value="5">5: Between Keys 4&6</option>
+                    <option value="7">7: Between Keys 6&8</option>
+                    <option value="9">9: Between Keys 8&10</option>
+                    <option value="11">11: Between Keys 10&12</option>
+                    <option value="13">13: Between Keys 12&14</option>
+                    <option value="15">15: Between Keys 14&16</option>
+                    <option value="17">17: Between Keys 16&18</option>
+                    <option value="19">19: Between Keys 18&20</option>
+                    <option value="21">21: Between Keys 20&22</option>
+                    <option value="23">23: Between Keys 22&24</option>
+                    <option value="25">25: Between Keys 24&26</option>
+                    <option value="27">27: Between Keys 26&28</option>
+                    <option value="29">29: Between Keys 28&30</option>
                 </optgroup>
                 <optgroup label="Sensors (32-37)">
                     <option value="32">32: Sensor 0</option>
@@ -286,19 +291,19 @@
         <h3>Group Controls</h3>
         <div class="control-row">
             <button onclick="sendToAllKeys()">All Keys (Even 0-30)</button>
-            <button onclick="sendToAllSeparators()">All Separators (Odd 1-29)</button>
+            <button onclick="sendToAllSeparators()">All Border Lines (Odd 1-29)</button>
             <button onclick="sendToAllSensors()">All Sensors (32-37)</button>
             <button onclick="sendToAllLEDs()">All LEDs (0-37)</button>
         </div>
         <div class="control-row">
             <button onclick="turnOffAllKeys()">Off Keys</button>
-            <button onclick="turnOffAllSeparators()">Off Separators</button>
+            <button onclick="turnOffAllSeparators()">Off Border Lines</button>
             <button onclick="turnOffAllSensors()">Off Sensors</button>
             <button onclick="turnOffAllLEDs()">Off All LEDs</button>
         </div>
         <div class="control-row">
             <button onclick="sendKeysRainbow()">Keys Rainbow</button>
-            <button onclick="sendSeparatorsRainbow()">Separators Rainbow</button>
+            <button onclick="sendSeparatorsRainbow()">Border Lines Rainbow</button>
             <button onclick="sendSensorsRainbow()">Sensors Rainbow</button>
             <button onclick="sendFullRainbow()">Full Rainbow</button>
         </div>
@@ -308,13 +313,13 @@
         <h3>Test Patterns</h3>
         <div class="control-row">
             <button onclick="testKeySequence()">Test Key Sequence</button>
-            <button onclick="testSeparatorSequence()">Test Separator Sequence</button>
+            <button onclick="testSeparatorSequence()">Test Border Lines Sequence</button>
             <button onclick="testSensorSequence()">Test Sensor Sequence</button>
             <button onclick="testAllSequence()">Test All Sequence</button>
         </div>
         <div class="control-row">
-            <button onclick="debugSeparatorGlow()">Debug Separator Glow</button>
-            <button onclick="debugSeparatorCSS()">Debug Separator CSS</button>
+            <button onclick="debugSeparatorGlow()">Debug Border Lines</button>
+            <button onclick="debugSeparatorCSS()">Debug Border CSS</button>
         </div>
     </div>
 

@@ -113,28 +113,62 @@ class WebSocketHandler {
   }
 
   getCellByLedId(ledId) {
-    // Use data-led-id attribute for all LED mapping
     const elementWithLedId = document.querySelector(`[data-led-id="${ledId}"]`);
     console.log(`Getting cell for LED ID ${ledId}:`, elementWithLedId);
+    
+    // For separator LED IDs (odd numbers 1-29), return the adjacent keys for border glow
+    if (ledId >= 1 && ledId <= 29 && ledId % 2 === 1) {
+      const leftKeyId = ledId - 1;
+      const rightKeyId = ledId + 1;
+      const leftKey = document.querySelector(`[data-led-id="${leftKeyId}"]`);
+      const rightKey = document.querySelector(`[data-led-id="${rightKeyId}"]`);
+      
+      // Return a special object that represents the separator between keys
+      return {
+        isSeparator: true,
+        ledId: ledId,
+        leftKey: leftKey,
+        rightKey: rightKey
+      };
+    }
+    
     return elementWithLedId || null;
   }
 
   applyLedToCell(cell, on, brightness, rgb) {
-    const isSeparator = cell.classList.contains("grid-separator");
-    console.log(`LED Apply - Cell:`, cell, `isSeparator: ${isSeparator}`, `on: ${on}`, `rgb:`, rgb);
+    // Check if this is a separator (border glow) request
+    const isSeparator = cell && cell.isSeparator;
+    
+    console.log(
+      `LED Apply - Cell:`,
+      cell,
+      `isSeparator: ${isSeparator}`,
+      `on: ${on}`,
+      `rgb:`,
+      rgb,
+    );
 
     if (!on) {
       if (isSeparator) {
-        console.log("Turning OFF separator");
-        cell.classList.remove("separator-glow");
-        cell.style.removeProperty("--separator-color");
-        // Force remove any inline styles
-        cell.style.background = "";
-        cell.style.boxShadow = "";
-      } else {
+        console.log("Turning OFF separator border line");
+        // Remove border glow from adjacent keys
+        if (cell.leftKey) {
+          cell.leftKey.classList.remove("border-glow-right");
+          cell.leftKey.style.removeProperty("--glow-color");
+          this.updateCellShadows(cell.leftKey);
+        }
+        if (cell.rightKey) {
+          cell.rightKey.classList.remove("border-glow-left");
+          cell.rightKey.style.removeProperty("--glow-color");
+          this.updateCellShadows(cell.rightKey);
+        }
+      } else if (cell && cell.classList) {
         cell.style.removeProperty("background-color");
         cell.style.removeProperty("box-shadow");
+        cell.style.removeProperty("--key-glow-color");
         cell.classList.remove("rgb-active");
+        cell.classList.remove("border-glow-left");
+        cell.classList.remove("border-glow-right");
         cell.removeAttribute("data-rgb-color");
       }
       return;
@@ -156,41 +190,94 @@ class WebSocketHandler {
     }
 
     if (isSeparator) {
-      console.log(`Applying separator glow with color: ${color}`);
+      console.log(`Applying separator border line with color: ${color}`);
       
-      // Set CSS custom property
-      cell.style.setProperty("--separator-color", color, "important");
-      
-      // Add glow class
-      cell.classList.add("separator-glow");
-      
-      // Force fallback styling for better compatibility
       const glowColor = `rgba(${r}, ${g}, ${b}, 0.9)`;
-      const shadowColor1 = `rgba(${r}, ${g}, ${b}, 0.8)`;
-      const shadowColor2 = `rgba(${r}, ${g}, ${b}, 0.4)`;
       
-      cell.style.background = glowColor;
-      cell.style.boxShadow = `
-        0 0 25px ${shadowColor1},
-        0 0 50px ${shadowColor2},
-        inset 0 0 15px ${glowColor}
-      `;
+      // Apply border glow to adjacent keys
+      if (cell.leftKey) {
+        cell.leftKey.style.setProperty("--glow-color", glowColor);
+        cell.leftKey.classList.add("border-glow-right");
+        this.updateCellShadows(cell.leftKey);
+      }
+      if (cell.rightKey) {
+        cell.rightKey.style.setProperty("--glow-color", glowColor);
+        cell.rightKey.classList.add("border-glow-left");
+        this.updateCellShadows(cell.rightKey);
+      }
       
-      console.log("Applied classes:", cell.className);
-      console.log("Applied custom property:", cell.style.getPropertyValue("--separator-color"));
-      console.log("Applied inline background:", cell.style.background);
-      console.log("Applied inline box-shadow:", cell.style.boxShadow);
-      
-      // Force a reflow to ensure styles are applied
-      cell.offsetHeight;
-    } else {
+      console.log(`Applied border line to separator ${cell.ledId} between keys`);
+    } else if (cell && cell.classList) {
       cell.setAttribute("data-rgb-color", color);
       cell.style.backgroundColor = color;
 
       const glowColor = `rgba(${r}, ${g}, ${b}, 0.6)`;
-      cell.style.boxShadow = `inset 0 0 20px ${glowColor}`;
+      cell.style.setProperty("--key-glow-color", glowColor);
+      
+      // Build box-shadow combining key LED and border glow effects
+      let shadows = [`inset 0 0 20px ${glowColor}`];
+      
+      // Add border lines if they exist
+      const hasLeftGlow = cell.classList.contains("border-glow-left");
+      const hasRightGlow = cell.classList.contains("border-glow-right");
+      
+      if (hasLeftGlow && hasRightGlow) {
+        shadows.push(
+          `inset 3px 0 0 var(--glow-color, rgba(255, 255, 255, 0.9))`,
+          `inset -3px 0 0 var(--glow-color, rgba(255, 255, 255, 0.9))`
+        );
+      } else if (hasLeftGlow) {
+        shadows.push(
+          `inset 3px 0 0 var(--glow-color, rgba(255, 255, 255, 0.9))`
+        );
+      } else if (hasRightGlow) {
+        shadows.push(
+          `inset -3px 0 0 var(--glow-color, rgba(255, 255, 255, 0.9))`
+        );
+      }
+      
+      cell.style.boxShadow = shadows.join(', ');
       cell.classList.add("rgb-active");
     }
+  }
+
+  updateCellShadows(cell) {
+    if (!cell || !cell.classList) return;
+    
+    const isActive = cell.classList.contains("rgb-active");
+    const hasLeftGlow = cell.classList.contains("border-glow-left");
+    const hasRightGlow = cell.classList.contains("border-glow-right");
+    
+    if (!isActive && !hasLeftGlow && !hasRightGlow) {
+      cell.style.removeProperty("box-shadow");
+      return;
+    }
+    
+    let shadows = [];
+    
+    // Add key LED shadow if active
+    if (isActive) {
+      const keyGlowColor = cell.style.getPropertyValue("--key-glow-color") || "rgba(255, 255, 255, 0.6)";
+      shadows.push(`inset 0 0 20px ${keyGlowColor}`);
+    }
+    
+    // Add border lines
+    if (hasLeftGlow && hasRightGlow) {
+      shadows.push(
+        `inset 3px 0 0 var(--glow-color, rgba(255, 255, 255, 0.9))`,
+        `inset -3px 0 0 var(--glow-color, rgba(255, 255, 255, 0.9))`
+      );
+    } else if (hasLeftGlow) {
+      shadows.push(
+        `inset 3px 0 0 var(--glow-color, rgba(255, 255, 255, 0.9))`
+      );
+    } else if (hasRightGlow) {
+      shadows.push(
+        `inset -3px 0 0 var(--glow-color, rgba(255, 255, 255, 0.9))`
+      );
+    }
+    
+    cell.style.boxShadow = shadows.join(', ');
   }
 
   getDeviceNameForCell(cell) {
