@@ -192,3 +192,32 @@ body {
     background-color: #333;
     color: white;
 }
+
+.grid-separator {
+    width: 8px;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.15);
+    transition: all 0.3s ease;
+    flex-shrink: 0;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 2px;
+}
+
+.grid-separator.separator-glow {
+    background: rgba(255, 255, 255, 0.9);
+    width: 16px;
+    box-shadow:
+        0 0 25px rgba(255, 255, 255, 0.8),
+        0 0 50px rgba(255, 255, 255, 0.4),
+        inset 0 0 15px rgba(255, 255, 255, 0.9);
+    transform: scaleY(1.2);
+
+    background: var(--separator-color, rgba(255, 255, 255, 0.9)) !important;
+    box-shadow:
+        0 0 25px var(--separator-color, rgba(255, 255, 255, 0.8)),
+        0 0 50px var(--separator-color, rgba(255, 255, 255, 0.4)),
+        inset 0 0 15px var(--separator-color, rgba(255, 255, 255, 0.9)) !important;
+}

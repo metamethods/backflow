@@ -113,29 +113,30 @@ class WebSocketHandler {
   }
 
   getCellByLedId(ledId) {
-    const airSensors = document.querySelectorAll(
-      '[data-cell-section="air-sensor"] .grid-cell',
-    );
-    const sliderButtons = document.querySelectorAll(
-      '[data-cell-section="slider"] .grid-cell',
-    );
-
-    if (ledId >= 0 && ledId < 16) {
-      return sliderButtons[ledId] || null;
-    } else if (ledId >= 16 && ledId < 22) {
-      const airIndex = ledId - 16;
-      return airSensors[airIndex] || null;
-    }
-
-    return null;
+    // Use data-led-id attribute for all LED mapping
+    const elementWithLedId = document.querySelector(`[data-led-id="${ledId}"]`);
+    console.log(`Getting cell for LED ID ${ledId}:`, elementWithLedId);
+    return elementWithLedId || null;
   }
 
   applyLedToCell(cell, on, brightness, rgb) {
+    const isSeparator = cell.classList.contains("grid-separator");
+    console.log(`LED Apply - Cell:`, cell, `isSeparator: ${isSeparator}`, `on: ${on}`, `rgb:`, rgb);
+
     if (!on) {
-      cell.style.removeProperty("background-color");
-      cell.style.removeProperty("box-shadow");
-      cell.classList.remove("rgb-active");
-      cell.removeAttribute("data-rgb-color");
+      if (isSeparator) {
+        console.log("Turning OFF separator");
+        cell.classList.remove("separator-glow");
+        cell.style.removeProperty("--separator-color");
+        // Force remove any inline styles
+        cell.style.background = "";
+        cell.style.boxShadow = "";
+      } else {
+        cell.style.removeProperty("background-color");
+        cell.style.removeProperty("box-shadow");
+        cell.classList.remove("rgb-active");
+        cell.removeAttribute("data-rgb-color");
+      }
       return;
     }
 
@@ -154,23 +155,51 @@ class WebSocketHandler {
       color = `rgba(${r}, ${g}, ${b}, ${alpha})`;
     }
 
-    cell.setAttribute("data-rgb-color", color);
-    cell.style.backgroundColor = color;
+    if (isSeparator) {
+      console.log(`Applying separator glow with color: ${color}`);
+      
+      // Set CSS custom property
+      cell.style.setProperty("--separator-color", color, "important");
+      
+      // Add glow class
+      cell.classList.add("separator-glow");
+      
+      // Force fallback styling for better compatibility
+      const glowColor = `rgba(${r}, ${g}, ${b}, 0.9)`;
+      const shadowColor1 = `rgba(${r}, ${g}, ${b}, 0.8)`;
+      const shadowColor2 = `rgba(${r}, ${g}, ${b}, 0.4)`;
+      
+      cell.style.background = glowColor;
+      cell.style.boxShadow = `
+        0 0 25px ${shadowColor1},
+        0 0 50px ${shadowColor2},
+        inset 0 0 15px ${glowColor}
+      `;
+      
+      console.log("Applied classes:", cell.className);
+      console.log("Applied custom property:", cell.style.getPropertyValue("--separator-color"));
+      console.log("Applied inline background:", cell.style.background);
+      console.log("Applied inline box-shadow:", cell.style.boxShadow);
+      
+      // Force a reflow to ensure styles are applied
+      cell.offsetHeight;
+    } else {
+      cell.setAttribute("data-rgb-color", color);
+      cell.style.backgroundColor = color;
 
-    const glowColor = `rgba(${r}, ${g}, ${b}, 0.6)`;
-    cell.style.boxShadow = `inset 0 0 20px ${glowColor}`;
-    cell.classList.add("rgb-active");
+      const glowColor = `rgba(${r}, ${g}, ${b}, 0.6)`;
+      cell.style.boxShadow = `inset 0 0 20px ${glowColor}`;
+      cell.classList.add("rgb-active");
+    }
   }
 
   getDeviceNameForCell(cell) {
-    // Check for data-name attribute on the grid container first
     const gridContainer = cell.closest("[data-name]");
     if (gridContainer) {
       const containerName = gridContainer.getAttribute("data-name");
       return containerName;
     }
 
-    // Fall back to section-based naming
     const container = cell.closest("[data-cell-section]");
     if (container) {
       const section = container.getAttribute("data-cell-section");
@@ -181,7 +210,7 @@ class WebSocketHandler {
 
   sendKeyboardEvent(key, pressed, deviceId = "service-menu") {
     if (!this.isConnected || !this.ws) {
-      console.warn('Cannot send keyboard event: WebSocket not connected');
+      console.warn("Cannot send keyboard event: WebSocket not connected");
       return;
     }
 
@@ -222,7 +251,7 @@ class GridController {
     this.container = document.getElementById("grid-container");
     this.overlapThreshold = 0;
     this.touchCounter = null;
-    this.activeTouches = new Map(); // Track which cell each touch ID is locked to
+    this.activeTouches = new Map();
 
     this.init();
   }
@@ -263,7 +292,9 @@ class GridController {
       const rect = cell.getBoundingClientRect();
       // Find the closest container with data-slider
       const sectionContainer = cell.closest("[data-cell-section]");
-      let sliderAttr = sectionContainer ? sectionContainer.getAttribute("data-slider") : null;
+      let sliderAttr = sectionContainer
+        ? sectionContainer.getAttribute("data-slider")
+        : null;
       let sliderEnabled = true;
       if (sliderAttr !== null) {
         sliderEnabled = sliderAttr === "true";
@@ -271,7 +302,9 @@ class GridController {
 
       // Check for feedback setting - defaults to true
       let feedbackEnabled = true;
-      const feedbackAttr = sectionContainer ? sectionContainer.getAttribute("data-feedback") : null;
+      const feedbackAttr = sectionContainer
+        ? sectionContainer.getAttribute("data-feedback")
+        : null;
       if (feedbackAttr !== null) {
         feedbackEnabled = feedbackAttr === "true";
       }
@@ -283,9 +316,7 @@ class GridController {
         left: rect.left,
         right: rect.right,
         almostLeft: prev ? rect.left + this.overlapThreshold : -99999,
-        almostRight: next
-          ? rect.right - this.overlapThreshold
-          : 99999,
+        almostRight: next ? rect.right - this.overlapThreshold : 99999,
         prevIndex: prev ? parseInt(prev.getAttribute("data-cell-index")) : null,
         nextIndex: next ? parseInt(next.getAttribute("data-cell-index")) : null,
         ref: cell,
@@ -369,7 +400,9 @@ class GridController {
         if (prevCell && (!targetCell || prevCell.index !== targetCell.index)) {
           // Force release of previous cell in current state
           newKeyStates[prevCell.index] = 0;
-          console.log(`Touch ${touchId}: releasing previous cell ${prevCell.index} (${prevCell.ref?.getAttribute('data-key')})`);
+          console.log(
+            `Touch ${touchId}: releasing previous cell ${prevCell.index} (${prevCell.ref?.getAttribute("data-key")})`,
+          );
         }
 
         // Update tracking for this touch
@@ -412,7 +445,9 @@ class GridController {
           if (prevCell) {
             newKeyStates[prevCell.index] = 0;
             this.touchToCell.delete(touchId);
-            console.log(`Touch ${touchId}: ended, releasing cell ${prevCell.index} (${prevCell.ref?.getAttribute('data-key')})`);
+            console.log(
+              `Touch ${touchId}: ended, releasing cell ${prevCell.index} (${prevCell.ref?.getAttribute("data-key")})`,
+            );
           }
           this.activeTouches.delete(touchId);
         }
@@ -513,7 +548,7 @@ class GridController {
       if (e.target.classList.contains("grid-cell")) {
         e.preventDefault();
         this.updateTouches({
-          preventDefault: () => { },
+          preventDefault: () => {},
           touches: [{ clientX: e.clientX, clientY: e.clientY }],
         });
       }
@@ -521,14 +556,14 @@ class GridController {
 
     container.addEventListener("mouseup", (e) => {
       this.updateTouches({
-        preventDefault: () => { },
+        preventDefault: () => {},
         touches: [],
       });
     });
 
     container.addEventListener("mouseleave", (e) => {
       this.updateTouches({
-        preventDefault: () => { },
+        preventDefault: () => {},
         touches: [],
       });
     });

@@ -75,3 +75,19 @@
     background: white;
     color: black;
 }
+
+.grid-separator {
+    width: 2px;
+    height: 100%;
+    background: rgba(255, 255, 255, 0.1);
+    transition: all 0.3s ease;
+    flex-shrink: 0;
+}
+
+.grid-separator.separator-glow {
+    background: var(--separator-color, rgba(255, 255, 255, 0.8));
+    box-shadow: 
+        0 0 10px var(--separator-color, rgba(255, 255, 255, 0.8)),
+        inset 0 0 5px var(--separator-color, rgba(255, 255, 255, 0.8));
+    width: 4px;
+}
