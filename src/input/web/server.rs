@@ -819,14 +819,147 @@ pub async fn bidirectional_ws_handler(
     info!("New WebSocket connection from {}", addr);
     ws.on_upgrade(move |socket| handle_socket(socket, addr, state))
 }
+/// Handles a single WebSocket message for a client. Returns true if the connection should break/close.
+#[tracing::instrument(skip_all, fields(msg))]
+async fn handle_websocket_message(
+    msg: Result<Message, axum::Error>,
+    addr: SocketAddr,
+    sender: &Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    state: &WebSocketState,
+    input_stream: &InputEventStream,
+    feedback_stream_for_client: &FeedbackEventStream,
+) -> bool {
+    match msg {
+        Ok(Message::Text(text)) => {
+            debug!("Received message from {}: {}", addr, text);
+
+            // Try to parse as InputEventPacket first
+            if let Ok(packet) = serde_json::from_str::<InputEventPacket>(&text) {
+                debug!(
+                    "Parsed input packet from {}: device_id={}, events={}",
+                    addr,
+                    packet.device_id,
+                    packet.events.len()
+                );
+
+                // Check timestamp ordering to prevent out-of-order packets
+                if state.should_process_packet(&packet).await {
+                    if let Err(e) = input_stream.send(packet).await {
+                        error!("Failed to send input event to stream: {}", e);
+                    } else {
+                        debug!(
+                            "Successfully sent input event packet from {} to main input stream",
+                            addr
+                        );
+                    }
+                } else {
+                    debug!(
+                        "Discarded out-of-order input packet from {} for device '{}'",
+                        addr, packet.device_id
+                    );
+                }
+            }
+            // If not an input packet, try to parse as FeedbackEventPacket for broadcasting
+            else if let Ok(feedback_packet) = serde_json::from_str::<FeedbackEventPacket>(&text) {
+                trace!(
+                    feedback_packet.device_id,
+                    feedback_packet_events_count = feedback_packet.events.len(),
+                    "Received feedback packet from {addr} for broadcasting",
+                );
+
+                // Instead of broadcasting directly here, send it through the main feedback stream
+                // This ensures all feedback goes through the same unified broadcast mechanism
+                if let Err(e) = feedback_stream_for_client.send(feedback_packet) {
+                    error!("Failed to send client feedback to main stream: {}", e);
+                } else {
+                    debug!(
+                        "Client feedback packet from {} forwarded to main broadcast system",
+                        addr
+                    );
+                }
+            } else {
+                warn!(
+                    "Failed to parse message from {} as either input or feedback packet",
+                    addr
+                );
+            }
+            false
+        }
+        Ok(Message::Binary(_)) => {
+            warn!("Received unexpected binary message from {}", addr);
+            false
+        }
+        Ok(Message::Ping(data)) => {
+            debug!("Received ping from {}", addr);
+            let mut sender_guard = sender.lock().await;
+            if let Err(e) = sender_guard.send(Message::Pong(data)).await {
+                warn!("Failed to send pong to {}: {}", addr, e);
+                return true;
+            }
+            false
+        }
+        Ok(Message::Pong(_)) => {
+            debug!("Received pong from {}", addr);
+            false
+        }
+        Ok(Message::Close(_)) => {
+            info!("Client {} disconnected", addr);
+            true
+        }
+        Err(e) => {
+            warn!("WebSocket error from {}: {}", addr, e);
+            true
+        }
+    }
+}
+
+/// Handles a single feedback packet to a WebSocket client. Returns true if the connection should break/close.
+#[tracing::instrument(skip_all, fields(feedback_packet))]
+async fn handle_feedback_packet_to_client(
+    feedback_packet: &FeedbackEventPacket,
+    sender: &Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+    addr: SocketAddr,
+) -> bool {
+    let start_time = std::time::Instant::now();
+    trace!(
+        target: crate::PACKET_PROCESSING_TARGET,
+        events = feedback_packet.events.len(),
+        device_id = feedback_packet.device_id,
+        "Sending feedback packet to {addr}",
+    );
+
+    match serde_json::to_string(feedback_packet) {
+        Ok(json) => {
+            let mut sender_guard = sender.lock().await;
+            if let Err(e) = sender_guard.send(Message::Text(json.into())).await {
+                warn!("Failed to send feedback to {}: {}", addr, e);
+                return true;
+            }
+            // Explicitly flush the WebSocket to ensure immediate sending
+            if let Err(e) = sender_guard.flush().await {
+                warn!("Failed to flush WebSocket for {}: {}", addr, e);
+                return true;
+            }
+
+            let elapsed = start_time.elapsed();
+            if elapsed.as_millis() > 5 {
+                debug!("Slow WebSocket send to {}: {}ms", addr, elapsed.as_millis());
+            }
+        }
+        Err(e) => {
+            error!("Failed to serialize feedback packet for {}: {}", addr, e);
+        }
+    }
+    false
+}
 
 /// Handles a single WebSocket connection for bidirectional communication.
+#[tracing::instrument(skip_all)]
 async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketState) {
     let (sender, mut receiver) = socket.split();
 
     // Create a channel for this specific client to receive feedback
-    let (feedback_tx, mut feedback_rx) =
-        tokio::sync::mpsc::unbounded_channel::<FeedbackEventPacket>();
+    let (feedback_tx, feedback_rx) = tokio::sync::mpsc::unbounded_channel::<FeedbackEventPacket>();
 
     // Add this client to the list of connected clients for feedback broadcasting
     {
@@ -851,135 +984,48 @@ async fn handle_socket(socket: WebSocket, addr: SocketAddr, state: WebSocketStat
     let input_task = {
         let sender = sender.clone();
         let state = state_for_input_task;
-        tokio::spawn(async move {
+        let input_stream = input_stream.clone();
+        let feedback_stream_for_client = feedback_stream_for_client.clone();
+        let handle_web_socket_messages = async move {
             while let Some(msg) = receiver.next().await {
-                match msg {
-                    Ok(Message::Text(text)) => {
-                        debug!("Received message from {}: {}", addr, text);
-
-                        // Try to parse as InputEventPacket first
-                        if let Ok(packet) = serde_json::from_str::<InputEventPacket>(&text) {
-                            debug!(
-                                "Parsed input packet from {}: device_id={}, events={}",
-                                addr,
-                                packet.device_id,
-                                packet.events.len()
-                            );
-
-                            // Check timestamp ordering to prevent out-of-order packets
-                            if state.should_process_packet(&packet).await {
-                                if let Err(e) = input_stream.send(packet).await {
-                                    error!("Failed to send input event to stream: {}", e);
-                                } else {
-                                    debug!(
-                                        "Successfully sent input event packet from {} to main input stream",
-                                        addr
-                                    );
-                                }
-                            } else {
-                                debug!(
-                                    "Discarded out-of-order input packet from {} for device '{}'",
-                                    addr, packet.device_id
-                                );
-                            }
-                        }
-                        // If not an input packet, try to parse as FeedbackEventPacket for broadcasting
-                        else if let Ok(feedback_packet) =
-                            serde_json::from_str::<FeedbackEventPacket>(&text)
-                        {
-                            trace!(
-                                feedback_packet.device_id,
-                                feedback_packet_events_count = feedback_packet.events.len(),
-                                "Received feedback packet from {addr} for broadcasting",
-                            );
-
-                            // Instead of broadcasting directly here, send it through the main feedback stream
-                            // This ensures all feedback goes through the same unified broadcast mechanism
-                            if let Err(e) = feedback_stream_for_client.send(feedback_packet) {
-                                error!("Failed to send client feedback to main stream: {}", e);
-                            } else {
-                                debug!(
-                                    "Client feedback packet from {} forwarded to main broadcast system",
-                                    addr
-                                );
-                            }
-                        } else {
-                            warn!(
-                                "Failed to parse message from {} as either input or feedback packet",
-                                addr
-                            );
-                        }
-                    }
-                    Ok(Message::Binary(_)) => {
-                        warn!("Received unexpected binary message from {}", addr);
-                    }
-                    Ok(Message::Ping(data)) => {
-                        debug!("Received ping from {}", addr);
-                        let mut sender_guard = sender.lock().await;
-                        if let Err(e) = sender_guard.send(Message::Pong(data)).await {
-                            warn!("Failed to send pong to {}: {}", addr, e);
-                            break;
-                        }
-                    }
-                    Ok(Message::Pong(_)) => {
-                        debug!("Received pong from {}", addr);
-                    }
-                    Ok(Message::Close(_)) => {
-                        info!("Client {} disconnected", addr);
-                        break;
-                    }
-                    Err(e) => {
-                        warn!("WebSocket error from {}: {}", addr, e);
-                        break;
-                    }
+                if handle_websocket_message(
+                    msg,
+                    addr,
+                    &sender,
+                    &state,
+                    &input_stream,
+                    &feedback_stream_for_client,
+                )
+                .await
+                {
+                    break;
                 }
             }
-
             // Note: Client cleanup from the broadcast list happens automatically
             // when the feedback channel is dropped and detected as closed
             debug!("Input task for client {} finished", addr);
-        })
+        };
+        tokio::spawn(handle_web_socket_messages)
     };
 
     // Task to handle outgoing messages (feedback events to client)
     let output_task = {
         let sender = sender.clone();
-        tokio::spawn(async move {
-            while let Some(feedback_packet) = feedback_rx.recv().await {
-                let start_time = std::time::Instant::now();
-                trace!(
-                    target: crate::PACKET_PROCESSING_TARGET,
-                    "Sending feedback packet to {}: device_id={}, events={}",
-                    addr,
-                    feedback_packet.device_id,
-                    feedback_packet.events.len()
-                );
-
-                match serde_json::to_string(&feedback_packet) {
-                    Ok(json) => {
-                        let mut sender_guard = sender.lock().await;
-                        if let Err(e) = sender_guard.send(Message::Text(json.into())).await {
-                            warn!("Failed to send feedback to {}: {}", addr, e);
-                            break;
-                        }
-                        // Explicitly flush the WebSocket to ensure immediate sending
-                        if let Err(e) = sender_guard.flush().await {
-                            warn!("Failed to flush WebSocket for {}: {}", addr, e);
-                            break;
-                        }
-
-                        let elapsed = start_time.elapsed();
-                        if elapsed.as_millis() > 5 {
-                            debug!("Slow WebSocket send to {}: {}ms", addr, elapsed.as_millis());
-                        }
-                    }
-                    Err(e) => {
-                        error!("Failed to serialize feedback packet for {}: {}", addr, e);
-                    }
-                }
-            }
-        })
+        tokio::spawn(handle_feedback_to_client(feedback_rx, sender, addr))
     };
+
+    /// Handles sending feedback events to a single WebSocket client.
+    async fn handle_feedback_to_client(
+        mut feedback_rx: tokio::sync::mpsc::UnboundedReceiver<FeedbackEventPacket>,
+        sender: Arc<tokio::sync::Mutex<futures_util::stream::SplitSink<WebSocket, Message>>>,
+        addr: SocketAddr,
+    ) {
+        while let Some(feedback_packet) = feedback_rx.recv().await {
+            if handle_feedback_packet_to_client(&feedback_packet, &sender, addr).await {
+                break;
+            }
+        }
+    }
 
     // Wait for either task to complete (connection closed or error)
     tokio::select! {
