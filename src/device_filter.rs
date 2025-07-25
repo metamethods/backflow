@@ -12,10 +12,7 @@ use std::collections::HashMap;
 use std::fmt;
 use tracing::{debug, trace, warn};
 
-
 // Let's add an expression engine for our keys :3
-
-
 
 /// Device filter that applies per-device transformations and routing
 #[derive(Clone)]
@@ -77,22 +74,40 @@ impl DeviceFilter {
                         }
                         KeyExpr::Combo(keys) => {
                             // For combos, emit multiple KeyPress/KeyRelease events with the same timestamp
-                            let events = keys.iter().map(|k| {
-                                match &keyboard_event {
-                                    KeyboardEvent::KeyPress { .. } => InputEvent::Keyboard(KeyboardEvent::KeyPress { key: k.clone() }),
-                                    KeyboardEvent::KeyRelease { .. } => InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: k.clone() }),
-                                }
-                            }).collect();
+                            let events = keys
+                                .iter()
+                                .map(|k| match &keyboard_event {
+                                    KeyboardEvent::KeyPress { .. } => {
+                                        InputEvent::Keyboard(KeyboardEvent::KeyPress {
+                                            key: k.clone(),
+                                        })
+                                    }
+                                    KeyboardEvent::KeyRelease { .. } => {
+                                        InputEvent::Keyboard(KeyboardEvent::KeyRelease {
+                                            key: k.clone(),
+                                        })
+                                    }
+                                })
+                                .collect();
                             Ok(events)
                         }
                         KeyExpr::Sequence(keys) => {
                             // For sequences, emit events in order
-                            let events = keys.iter().map(|k| {
-                                match &keyboard_event {
-                                    KeyboardEvent::KeyPress { .. } => InputEvent::Keyboard(KeyboardEvent::KeyPress { key: k.clone() }),
-                                    KeyboardEvent::KeyRelease { .. } => InputEvent::Keyboard(KeyboardEvent::KeyRelease { key: k.clone() }),
-                                }
-                            }).collect();
+                            let events = keys
+                                .iter()
+                                .map(|k| match &keyboard_event {
+                                    KeyboardEvent::KeyPress { .. } => {
+                                        InputEvent::Keyboard(KeyboardEvent::KeyPress {
+                                            key: k.clone(),
+                                        })
+                                    }
+                                    KeyboardEvent::KeyRelease { .. } => {
+                                        InputEvent::Keyboard(KeyboardEvent::KeyRelease {
+                                            key: k.clone(),
+                                        })
+                                    }
+                                })
+                                .collect();
                             Ok(events)
                         }
                     }
@@ -165,7 +180,9 @@ impl DeviceFilter {
                     return Ok(true); // Always keep remapped keys
                 }
                 _ => {
-                    warn!("Complex KeyExpr found in legacy transform method - use expand_event instead");
+                    warn!(
+                        "Complex KeyExpr found in legacy transform method - use expand_event instead"
+                    );
                     return Ok(true); // Keep the original key for now
                 }
             }
@@ -208,7 +225,9 @@ impl DeviceFilter {
                     return Ok(true); // Always keep remapped keys
                 }
                 _ => {
-                    warn!("Complex KeyExpr found in legacy transform method - use expand_event instead");
+                    warn!(
+                        "Complex KeyExpr found in legacy transform method - use expand_event instead"
+                    );
                     return Ok(true); // Keep the original key for now
                 }
             }
@@ -273,7 +292,7 @@ impl DeviceFilter {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum KeyExpr {
     Single(String),
-    Combo(Vec<String>), // e.g., multiple keys pressed together
+    Combo(Vec<String>),    // e.g., multiple keys pressed together
     Sequence(Vec<String>), // e.g., keys pressed in order
 }
 
@@ -288,7 +307,6 @@ impl KeyExpr {
             KeyExpr::Single(expr.trim().to_string())
         }
     }
-
 }
 
 impl fmt::Display for KeyExpr {
@@ -315,7 +333,10 @@ mod tests {
         let mut remap = HashMap::new();
         remap.insert("SLIDER_1".to_string(), KeyExpr::Single("KEY_A".to_string()));
         remap.insert("SLIDER_2".to_string(), KeyExpr::Single("KEY_B".to_string()));
-        remap.insert("GAME_1".to_string(), KeyExpr::Single("KEY_SPACE".to_string()));
+        remap.insert(
+            "GAME_1".to_string(),
+            KeyExpr::Single("KEY_SPACE".to_string()),
+        );
 
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
@@ -438,7 +459,10 @@ mod tests {
         // Create a test device config with whitelist enabled
         let mut remap = HashMap::new();
         remap.insert("SLIDER_1".to_string(), KeyExpr::Single("KEY_A".to_string()));
-        remap.insert("GAME_1".to_string(), KeyExpr::Single("KEY_SPACE".to_string()));
+        remap.insert(
+            "GAME_1".to_string(),
+            KeyExpr::Single("KEY_SPACE".to_string()),
+        );
 
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
@@ -608,7 +632,10 @@ mod tests {
 
         // Create a test device config with combo mapping
         let mut remap = HashMap::new();
-        remap.insert("SLIDER_1".to_string(), KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
+        remap.insert(
+            "SLIDER_1".to_string(),
+            KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]),
+        );
 
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
@@ -659,7 +686,14 @@ mod tests {
 
         // Create a test device config with sequence mapping
         let mut remap = HashMap::new();
-        remap.insert("SLIDER_1".to_string(), KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+        remap.insert(
+            "SLIDER_1".to_string(),
+            KeyExpr::Sequence(vec![
+                "KEY_A".to_string(),
+                "KEY_B".to_string(),
+                "KEY_C".to_string(),
+            ]),
+        );
 
         let device_config = DeviceConfig {
             map_backend: "uinput".to_string(),
@@ -708,19 +742,39 @@ mod tests {
 
         // Test combo
         let combo = KeyExpr::parse("KEY_A+KEY_B");
-        assert_eq!(combo, KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
+        assert_eq!(
+            combo,
+            KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()])
+        );
 
         // Test sequence
         let sequence = KeyExpr::parse("KEY_A,KEY_B,KEY_C");
-        assert_eq!(sequence, KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+        assert_eq!(
+            sequence,
+            KeyExpr::Sequence(vec![
+                "KEY_A".to_string(),
+                "KEY_B".to_string(),
+                "KEY_C".to_string()
+            ])
+        );
 
         // Test combo with spaces
         let combo_spaces = KeyExpr::parse(" KEY_A + KEY_B ");
-        assert_eq!(combo_spaces, KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()]));
+        assert_eq!(
+            combo_spaces,
+            KeyExpr::Combo(vec!["KEY_A".to_string(), "KEY_B".to_string()])
+        );
 
         // Test sequence with spaces
         let sequence_spaces = KeyExpr::parse(" KEY_A , KEY_B , KEY_C ");
-        assert_eq!(sequence_spaces, KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]));
+        assert_eq!(
+            sequence_spaces,
+            KeyExpr::Sequence(vec![
+                "KEY_A".to_string(),
+                "KEY_B".to_string(),
+                "KEY_C".to_string()
+            ])
+        );
     }
 
     #[test]
@@ -734,7 +788,11 @@ mod tests {
         assert_eq!(format!("{}", combo), "KEY_A+KEY_B");
 
         // Test sequence
-        let sequence = KeyExpr::Sequence(vec!["KEY_A".to_string(), "KEY_B".to_string(), "KEY_C".to_string()]);
+        let sequence = KeyExpr::Sequence(vec![
+            "KEY_A".to_string(),
+            "KEY_B".to_string(),
+            "KEY_C".to_string(),
+        ]);
         assert_eq!(format!("{}", sequence), "KEY_A,KEY_B,KEY_C");
     }
 }

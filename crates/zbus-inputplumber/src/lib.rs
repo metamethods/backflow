@@ -37,7 +37,7 @@ mod tests {
     #[tokio::test]
     async fn test_dummy() {
         let conn = system_bus().await.unwrap();
-        
+
         // Try to create a connection to inputplumber, but don't fail if the service isn't available
         match interface::input_manager::InputManagerProxy::new(&conn).await {
             Ok(manager) => {
@@ -60,7 +60,10 @@ mod tests {
                         println!("Stopped target device: {:?}", target_device.path);
                     }
                     Err(e) => {
-                        println!("Could not create target device: {}, but service is available", e);
+                        println!(
+                            "Could not create target device: {}, but service is available",
+                            e
+                        );
                         // This is ok - service might be running but not fully functional
                     }
                 }

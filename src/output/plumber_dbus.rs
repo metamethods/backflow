@@ -213,33 +213,43 @@ impl DbusPlumberOutput {
             KeyboardEvent::KeyPress { key } => {
                 // Get the current state for this specific key only
                 let current_state = self.key_states.get(&key);
-                
+
                 // Check if we should ignore this KeyPress due to out-of-order timing
                 // Only ignore if:
                 // 1. We have a previous state for this key
-                // 2. The key is currently not pressed 
+                // 2. The key is currently not pressed
                 // 3. This timestamp is older than the last timestamp for THIS SPECIFIC KEY
                 if let Some(state) = current_state {
                     if !state.pressed && timestamp < state.last_timestamp {
-                        tracing::warn!("Ignoring out-of-order KeyPress for key '{}' (timestamp: {}, last: {})", 
-                                     key, timestamp, state.last_timestamp);
+                        tracing::warn!(
+                            "Ignoring out-of-order KeyPress for key '{}' (timestamp: {}, last: {})",
+                            key,
+                            timestamp,
+                            state.last_timestamp
+                        );
                         return Ok(());
                     }
                 }
 
                 // Update state for this specific key and send the key press
-                self.key_states.insert(key.clone(), KeyState {
-                    pressed: true,
-                    last_timestamp: timestamp,
-                });
+                self.key_states.insert(
+                    key.clone(),
+                    KeyState {
+                        pressed: true,
+                        last_timestamp: timestamp,
+                    },
+                );
                 proxy.send_key(&key, true).await?;
             }
             KeyboardEvent::KeyRelease { key } => {
                 // Always allow KeyRelease events and update state for this specific key
-                self.key_states.insert(key.clone(), KeyState {
-                    pressed: false,
-                    last_timestamp: timestamp,
-                });
+                self.key_states.insert(
+                    key.clone(),
+                    KeyState {
+                        pressed: false,
+                        last_timestamp: timestamp,
+                    },
+                );
                 proxy.send_key(&key, false).await?;
             }
         }

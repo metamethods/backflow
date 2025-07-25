@@ -307,7 +307,10 @@ pub struct ChuniJvsReader {
 
 impl ChuniJvsReader {
     /// Create a new CHUNITHM JVS reader service.
-    pub fn new(socket_path: PathBuf, packet_sender: mpsc::UnboundedSender<ChuniLedDataPacket>) -> Self {
+    pub fn new(
+        socket_path: PathBuf,
+        packet_sender: mpsc::UnboundedSender<ChuniLedDataPacket>,
+    ) -> Self {
         Self {
             socket_path,
             packet_sender,

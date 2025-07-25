@@ -21,7 +21,8 @@
 //! [D-Bus standard interfaces]: https://dbus.freedesktop.org/doc/dbus-specification.html#standard-interfaces,
 use zbus::proxy;
 #[proxy(
-    interface = "org.shadowblip.Input.Keyboard", assume_defaults = true,
+    interface = "org.shadowblip.Input.Keyboard",
+    assume_defaults = true,
     default_service = "org.shadowblip.InputPlumber"
 )]
 pub trait Keyboard {
