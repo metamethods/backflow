@@ -20,7 +20,7 @@ use idevice_proxy::spawn_iproxy;
 
 /// Shared Brokenithm input state that can be polled by chuniio_proxy
 #[derive(Debug, Clone, PartialEq)]
-pub struct BrokenithmInputState {
+pub struct BoardInputState {
     pub air: Vec<u8>,    // 6 air zones
     pub slider: Vec<u8>, // 32 slider zones
     pub test_button: bool,
@@ -28,7 +28,7 @@ pub struct BrokenithmInputState {
     pub coin_pulse: bool, // Coin insertion pulse
 }
 
-impl BrokenithmInputState {
+impl BoardInputState {
     pub fn new() -> Self {
         Self {
             air: vec![0; 6],
@@ -41,15 +41,15 @@ impl BrokenithmInputState {
 }
 
 /// Global shared state for Brokenithm input
-static BROKENITHM_SHARED_STATE: OnceLock<RwLock<Option<BrokenithmInputState>>> = OnceLock::new();
+static BROKENITHM_SHARED_STATE: OnceLock<RwLock<Option<BoardInputState>>> = OnceLock::new();
 
 /// Enable shared state tracking for Brokenithm
 pub async fn enable_brokenithm_shared_state() {
     let state_lock =
-        BROKENITHM_SHARED_STATE.get_or_init(|| RwLock::new(Some(BrokenithmInputState::new())));
+        BROKENITHM_SHARED_STATE.get_or_init(|| RwLock::new(Some(BoardInputState::new())));
     let mut state = state_lock.write().await;
     if state.is_none() {
-        *state = Some(BrokenithmInputState::new());
+        *state = Some(BoardInputState::new());
     }
     tracing::info!("Brokenithm shared state enabled");
 }
@@ -64,7 +64,7 @@ pub async fn disable_brokenithm_shared_state() {
 }
 
 /// Get current Brokenithm shared state (for polling by chuniio_proxy)
-pub async fn get_brokenithm_state() -> Option<BrokenithmInputState> {
+pub async fn get_brokenithm_state() -> Option<BoardInputState> {
     if let Some(state_lock) = BROKENITHM_SHARED_STATE.get() {
         let state = state_lock.read().await;
         state.clone()
@@ -74,7 +74,7 @@ pub async fn get_brokenithm_state() -> Option<BrokenithmInputState> {
 }
 
 /// Update Brokenithm shared state (called by input backends)
-pub async fn set_brokenithm_state(new_state: BrokenithmInputState) {
+pub async fn set_brokenithm_state(new_state: BoardInputState) {
     if let Some(state_lock) = BROKENITHM_SHARED_STATE.get() {
         let mut state = state_lock.write().await;
         if state.is_some() {
@@ -733,7 +733,7 @@ impl BrokenithmInputStateTracker {
         let prev_slider = self.prev_slider.clone();
         let coin_pulse = self.coin_pulse;
         tokio::spawn(async move {
-            let new_state = BrokenithmInputState {
+            let new_state = BoardInputState {
                 air: prev_air,
                 slider: prev_slider,
                 test_button,

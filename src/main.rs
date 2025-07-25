@@ -7,7 +7,7 @@ mod output;
 mod protos;
 use eyre::Result;
 
-pub const PACKET_PROCESSING_TARGET: &str = "backflow::websocket::rgb";
+pub const PACKET_PROCESSING_TARGET: &str = "backflow::packet_processing";
 pub const CHANNEL_BUFFER_SIZE: usize = 2000; // Size of the channel buffer for input events
 
 pub fn build_logger() -> Result<()> {

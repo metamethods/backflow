@@ -85,7 +85,7 @@
 
 use crate::feedback::FeedbackEventStream;
 use crate::feedback::generators::chuni_jvs::{ChuniLedDataPacket, LedBoardData, Rgb};
-use crate::input::brokenithm::{BrokenithmInputState, get_brokenithm_state};
+use crate::input::brokenithm::{BoardInputState, get_brokenithm_state};
 use crate::input::{
     InputEvent, InputEventPacket, InputEventReceiver, InputEventStream, KeyboardEvent,
 };
@@ -104,10 +104,7 @@ use tracing::{error, info, trace, warn};
 const DEFAULT_SOCKET_PATH: &str = "/tmp/backflow_chuniio.sock";
 
 /// Check if Brokenithm state has changed compared to previous state
-fn brokenithm_state_changed(
-    current: &BrokenithmInputState,
-    previous: &Option<BrokenithmInputState>,
-) -> bool {
+fn brokenithm_state_changed(current: &BoardInputState, previous: &Option<BoardInputState>) -> bool {
     match previous {
         None => true,                  // First time, always apply
         Some(prev) => current != prev, // Use PartialEq for comparison
@@ -117,7 +114,7 @@ fn brokenithm_state_changed(
 /// Convert Brokenithm state to chuniio protocol state
 fn apply_brokenithm_state_to_chuniio(
     chuniio_state: &mut ChuniProtocolState,
-    brokenithm_state: &BrokenithmInputState,
+    brokenithm_state: &BoardInputState,
     last_coin_pulse: &mut bool,
 ) {
     // Update operator buttons
@@ -166,7 +163,7 @@ pub struct ChuniioProxyServer {
     feedback_stream: FeedbackEventStream,
     led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
     last_coin_pulse: bool, // Track coin pulse state for edge detection
-    last_brokenithm_state: Option<BrokenithmInputState>, // Track last applied Brokenithm state for change detection
+    board_state: Option<BoardInputState>, // Track last applied Brokenithm state for change detection
 }
 
 impl ChuniioProxyServer {
@@ -197,7 +194,7 @@ impl ChuniioProxyServer {
             feedback_stream,
             led_packet_tx,
             last_coin_pulse: false,
-            last_brokenithm_state: None,
+            board_state: None,
         }
     }
 }
@@ -264,7 +261,7 @@ impl OutputBackend for ChuniioProxyServer {
                 _ = poll_interval.tick() => {
                     if let Some(brokenithm_state) = get_brokenithm_state().await {
                         // Only apply state if it has changed to avoid redundant updates
-                        if brokenithm_state_changed(&brokenithm_state, &self.last_brokenithm_state) {
+                        if brokenithm_state_changed(&brokenithm_state, &self.board_state) {
                             let mut chuniio_state = self.protocol_state.write().await;
                             tracing::trace!(
                                 "Brokenithm state changed, applying to chuniio state: air={:?}, slider={:?}, test={}, service={}, coin_pulse={}",
@@ -277,7 +274,7 @@ impl OutputBackend for ChuniioProxyServer {
                             apply_brokenithm_state_to_chuniio(&mut chuniio_state, &brokenithm_state, &mut self.last_coin_pulse);
 
                             // Store the applied state for future comparison
-                            self.last_brokenithm_state = Some(brokenithm_state);
+                            self.board_state = Some(brokenithm_state);
                         } else {
                             // State hasn't changed, no need to apply
                             // tracing::trace!("Brokenithm state unchanged, skipping state application");
@@ -348,25 +345,6 @@ impl OutputBackend for ChuniioProxyServer {
 }
 
 impl ChuniioProxyServer {
-    /// Create internal server with channels (used by the OutputBackend implementation)
-    fn new_internal(
-        socket_path: PathBuf,
-        input_tx: mpsc::UnboundedSender<ChuniInputEvent>,
-        feedback_tx: mpsc::UnboundedSender<ChuniFeedbackEvent>,
-        protocol_state: Arc<RwLock<ChuniProtocolState>>,
-        next_client_id: Arc<RwLock<u64>>,
-        led_packet_tx: mpsc::UnboundedSender<ChuniLedDataPacket>,
-    ) -> InternalChuniioProxyServer {
-        InternalChuniioProxyServer {
-            socket_path,
-            protocol_state,
-            next_client_id,
-            input_tx,
-            feedback_tx,
-            led_packet_tx,
-        }
-    }
-
     /// Process input packets from the application and convert to chuniio events
     #[tracing::instrument(level = "debug", skip_all, fields(events = packet.events.len()), err)]
     async fn process_input_packet(
@@ -384,85 +362,113 @@ impl ChuniioProxyServer {
 
         // Apply all events in the batch
         for event in &packet.events {
-            match &event {
-                InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
-                | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) => {
-                    let pressed =
-                        matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
-
-                    if key == "CHUNIIO_COIN" {
-                        if pressed {
-                            state.coin_counter += 1;
-                            trace!("Batch: Coin inserted, counter now: {}", state.coin_counter);
-                        }
-                    } else if key == "CHUNIIO_TEST" {
-                        if pressed {
-                            state.jvs_state.opbtn |= CHUNI_IO_OPBTN_TEST;
-                        } else {
-                            state.jvs_state.opbtn &= !CHUNI_IO_OPBTN_TEST;
-                        }
-                        trace!(
-                            "Batch: Test button {}",
-                            if pressed { "pressed" } else { "released" }
-                        );
-                    } else if key == "CHUNIIO_SERVICE" {
-                        if pressed {
-                            state.jvs_state.opbtn |= CHUNI_IO_OPBTN_SERVICE;
-                        } else {
-                            state.jvs_state.opbtn &= !CHUNI_IO_OPBTN_SERVICE;
-                        }
-                        trace!(
-                            "Batch: Service button {}",
-                            if pressed { "pressed" } else { "released" }
-                        );
-                    } else if let Some(region_str) = key.strip_prefix("CHUNIIO_SLIDER_") {
-                        if let Ok(region) = region_str.parse::<u8>() {
-                            if region < 32 {
-                                let pressure = if pressed { 255 } else { 0 };
-                                state.slider_state.pressure[region as usize] = pressure;
-                                trace!("Batch: Slider region {} pressure {}", region, pressure);
-                            }
-                        }
-                    } else if let Some(beam_str) = key.strip_prefix("CHUNIIO_IR_") {
-                        if let Ok(beam) = beam_str.parse::<u8>() {
-                            if beam < 6 {
-                                if pressed {
-                                    state.jvs_state.beams |= 1 << beam; // Set beam bit when pressed (beam clear)
-                                } else {
-                                    state.jvs_state.beams &= !(1 << beam); // Clear beam bit when released (beam blocked)
-                                }
-                                trace!(
-                                    "Batch: IR beam {} {}",
-                                    beam,
-                                    if pressed { "clear" } else { "blocked" }
-                                );
-                            }
-                        }
-                    }
+            match event {
+                InputEvent::Keyboard(KeyboardEvent::KeyPress { .. })
+                | InputEvent::Keyboard(KeyboardEvent::KeyRelease { .. }) => {
+                    Self::handle_keyboard_event(&mut state, event);
                 }
-                _ => {
-                    // Ignore non-keyboard events in batch processing
-                }
+                _ => {}
             }
         }
 
-        let active_regions: Vec<usize> = state
-            .slider_state
-            .pressure
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &p)| if p > 0 { Some(i) } else { None })
-            .collect();
+        // collect active slider regions for debug
+        {
+            let opbtn = state.jvs_state.opbtn;
+            let beams = state.jvs_state.beams;
+            let pressure = state.slider_state.pressure;
+            let active_regions: Vec<_> = pressure
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &p)| (p > 0).then_some(i))
+                .collect();
 
-        trace!(
-            "Batch processing complete - opbtn: {}, beams: {:#06b}, slider active regions: {} ({:?})",
-            state.jvs_state.opbtn,
-            state.jvs_state.beams,
-            active_regions.len(),
-            active_regions
-        );
+            trace!(
+                "Batch processing complete - opbtn: {}, beams: {:#08b}, slider active regions: {} ({:?})",
+                opbtn,
+                beams,
+                active_regions.len(),
+                active_regions
+            );
+        }
 
         Ok(())
+    }
+
+    /// Handle a single keyboard event and update protocol state accordingly
+    #[inline]
+    fn handle_keyboard_event(state: &mut ChuniProtocolState, event: &InputEvent) {
+        if let InputEvent::Keyboard(KeyboardEvent::KeyPress { key })
+        | InputEvent::Keyboard(KeyboardEvent::KeyRelease { key }) = event
+        {
+            let pressed = matches!(event, InputEvent::Keyboard(KeyboardEvent::KeyPress { .. }));
+
+            // Coin input
+            if key == "CHUNIIO_COIN" {
+                if pressed {
+                    state.coin_counter += 1;
+                    trace!("Batch: Coin inserted, counter now: {}", state.coin_counter);
+                }
+                return;
+            }
+
+            // Test button
+            if key == "CHUNIIO_TEST" {
+                if pressed {
+                    state.jvs_state.opbtn |= CHUNI_IO_OPBTN_TEST;
+                } else {
+                    state.jvs_state.opbtn &= !CHUNI_IO_OPBTN_TEST;
+                }
+                trace!(
+                    "Batch: Test button {}",
+                    if pressed { "pressed" } else { "released" }
+                );
+                return;
+            }
+
+            // Service button
+            if key == "CHUNIIO_SERVICE" {
+                if pressed {
+                    state.jvs_state.opbtn |= CHUNI_IO_OPBTN_SERVICE;
+                } else {
+                    state.jvs_state.opbtn &= !CHUNI_IO_OPBTN_SERVICE;
+                }
+                trace!(
+                    "Batch: Service button {}",
+                    if pressed { "pressed" } else { "released" }
+                );
+                return;
+            }
+
+            // Slider region
+            if let Some(region_str) = key.strip_prefix("CHUNIIO_SLIDER_") {
+                if let Ok(region) = region_str.parse::<u8>() {
+                    if region < 32 {
+                        let pressure = if pressed { 255 } else { 0 };
+                        state.slider_state.pressure[region as usize] = pressure;
+                        trace!("Batch: Slider region {} pressure {}", region, pressure);
+                    }
+                }
+                return;
+            }
+
+            // IR beam
+            if let Some(beam_str) = key.strip_prefix("CHUNIIO_IR_") {
+                if let Ok(beam) = beam_str.parse::<u8>() {
+                    if beam < 6 {
+                        if pressed {
+                            state.jvs_state.beams |= 1 << beam; // Set beam bit when pressed (beam clear)
+                        } else {
+                            state.jvs_state.beams &= !(1 << beam); // Clear beam bit when released (beam blocked)
+                        }
+                        trace!(
+                            "Batch: IR beam {} {}",
+                            beam,
+                            if pressed { "clear" } else { "blocked" }
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -578,38 +584,16 @@ impl InternalChuniioProxyServer {
         let mut reader = tokio::io::BufReader::new(reader);
         let writer = Arc::new(tokio::sync::Mutex::new(writer));
 
-        // Channel for receiving feedback events to send to this client
-        let (_client_feedback_tx, mut client_feedback_rx) =
-            mpsc::unbounded_channel::<ChuniFeedbackEvent>();
+        // Channel for receiving feedback events to send to this client (bounded, only latest kept)
+        let (_client_feedback_tx, client_feedback_rx) = mpsc::channel::<ChuniFeedbackEvent>(1);
 
-        // Spawn task to handle outgoing feedback messages
+        // Spawn optimized feedback writer task
         let writer_clone = Arc::clone(&writer);
-        let feedback_task = tokio::spawn(async move {
-            while let Some(feedback_event) = client_feedback_rx.recv().await {
-                info!(
-                    "Client {} received feedback event: {:?}",
-                    client_id, feedback_event
-                );
-                if let Some(message) = Self::feedback_event_to_message(feedback_event) {
-                    info!(
-                        "Client {} sending feedback message: {:?}",
-                        client_id, message
-                    );
-                    let mut writer_guard = writer_clone.lock().await;
-                    if let Err(e) = message.write_to(&mut *writer_guard).await {
-                        warn!("Failed to send feedback to client {}: {}", client_id, e);
-                        break;
-                    } else {
-                        info!("Client {} feedback message sent successfully", client_id);
-                    }
-                } else {
-                    warn!(
-                        "Client {} could not convert feedback event to message",
-                        client_id
-                    );
-                }
-            }
-        });
+        let feedback_task = tokio::spawn(Self::client_feedback_task(
+            client_id,
+            writer_clone,
+            client_feedback_rx,
+        ));
 
         // Handle incoming messages from client
         loop {
@@ -644,10 +628,7 @@ impl InternalChuniioProxyServer {
                                 // info!("Client {} response sent successfully", client_id);
                             }
                         }
-                        Ok(None) => {
-                            // No response needed
-                            // info!("Client {} no response needed for packet", client_id);
-                        }
+                        Ok(None) => (), // No response needed
                         Err(e) => {
                             warn!("Error handling message from client {}: {}", client_id, e);
                         }
@@ -669,8 +650,47 @@ impl InternalChuniioProxyServer {
         Ok(())
     }
 
+    /// Optimized feedback writer: always sends the latest event, drops old events
+    async fn client_feedback_task(
+        client_id: u64,
+        writer: Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+        mut client_feedback_rx: tokio::sync::mpsc::Receiver<ChuniFeedbackEvent>,
+    ) {
+        // Always send the latest event, drop any previous unsent event if a new one arrives
+        loop {
+            tokio::select! {
+                Some(event) = client_feedback_rx.recv() => {
+                    // Immediately send the event, dropping any previous unsent event
+                    let send_result = Self::send_feedback_event(client_id, &writer, event).await;
+                    if let Err(e) = send_result {
+                        warn!("Failed to send feedback to client {}: {}", client_id, e);
+                        break;
+                    }
+                }
+                else => { break; }
+            }
+        }
+    }
+
+    /// Actually send a feedback event to the client
+    #[tracing::instrument(level = "trace", skip(writer), fields(client_id, ?feedback_event))]
+    async fn send_feedback_event(
+        _client_id: u64,
+        writer: &Arc<tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>>,
+        feedback_event: ChuniFeedbackEvent,
+    ) -> Result<(), String> {
+        if let Some(message) = Self::feedback_event_to_message(feedback_event) {
+            let mut writer_guard = writer.lock().await;
+            message
+                .write_to(&mut *writer_guard)
+                .await
+                .map_err(|e| e.to_string())
+        } else {
+            Err("Could not convert feedback event to message".to_string())
+        }
+    }
+
     /// Handle a message from a client and optionally return a response
-    #[tracing::instrument(level = "debug", skip_all, fields(client_id), err)]
     #[tracing::instrument(level = "debug", skip_all, fields(client_id, ?message), err)]
     async fn handle_client_message(
         client_id: u64,
@@ -845,6 +865,7 @@ impl InternalChuniioProxyServer {
     }
 
     /// Convert feedback event to chuniio message
+    #[inline]
     fn feedback_event_to_message(event: ChuniFeedbackEvent) -> Option<ChuniMessage> {
         match event {
             ChuniFeedbackEvent::SliderLeds { rgb_data } => {
@@ -856,7 +877,7 @@ impl InternalChuniioProxyServer {
         }
     }
 
-    /// Send feedback event to all connected clients
+    /*     /// Send feedback event to all connected clients
     pub async fn send_feedback(
         &self,
         event: ChuniFeedbackEvent,
@@ -875,7 +896,7 @@ impl InternalChuniioProxyServer {
 
         // Forward to input handler
         self.input_tx.send(event)
-    }
+    } */
 }
 
 #[cfg(test)]
