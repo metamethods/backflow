@@ -1,64 +1,13 @@
-<!doctype html>
-<html>
-    <head>
-        <title>Backflow Web</title>
-        <link rel="stylesheet" href="styles.css" />
-          <!-- Viewport for mobile -->
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-
-        <!-- Apple-specific meta tags -->
-        <meta name="apple-mobile-web-app-capable" content="yes">
-        <meta name="apple-mobile-web-app-status-bar-style" content="black">
-        <meta name="apple-mobile-web-app-title" content="Your App">
-
-        <!-- PWA manifest -->
-        <link rel="manifest" href="/manifest.json">
-
-        <!-- Icons -->
-        <link rel="apple-touch-icon" href="/icon-192.png">
-        <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
-
-        <!-- Theme colors (optional but recommended) -->
-        <meta name="theme-color" content="#000000">
-    </head>
-    <body>
-        <div class="custom-dropdown-section">
-            <label for="custom-dropdown">Custom:</label>
-            <select id="custom-dropdown">
-                <option value="">Select a custom template...</option>
-            </select>
-        </div>
-        <div class="fullscreen-nav">
-            <a href="templates/chuni.html" class="nav-button">Chuni Controller</a>
-            <a href="templates/chuniio.html" class="nav-button">ChuniIO</a>
-            <a href="templates/keyboard.html" class="nav-button">Keyboard</a>
-            <a href="templates/taiko.html" class="nav-button">Taiko Drum</a>
-        </div>
-    <script>
-        // Register the service worker
-        if ('serviceWorker' in navigator) {
-            navigator.serviceWorker.register('/sw.js').then(reg => {
-                console.log('SW registered', reg);
-            }).catch(err => {
-                console.error('SW registration failed:', err);
-            });
-        }
-
-        // Load custom HTML files
-        async function loadCustomFiles() {
-          // do that
-        }
-
-        // Handle dropdown selection
-        document.getElementById('custom-dropdown').addEventListener('change', function() {
-            const selectedValue = this.value;
-            if (selectedValue) {
-                window.location.href = selectedValue;
-            }
-        });
-
-        // Load custom files when page loads
-        document.addEventListener('DOMContentLoaded', loadCustomFiles);
-    </script>
-    </body>
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Backflow Web</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
 </html>
